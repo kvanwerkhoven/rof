@@ -14,11 +14,11 @@ domain = 'conus'
 ###########***REPLACE THIS STUFF TO TEST #################
 
 # shapefile at least 1 attribute for polygon ID (could be gage ID, HUC ID...)
-shp_file = 'C:/repos/git/nwm/rof/output/shp/20210328_t00/ROF_mask_20210328_t00_conus.shp'
+shp_file = 'C:/repos/git/nwm/rof/output/shp/20210328_t00/ROF_mask_20210328_t01_conus.shp'
 # header of the polygon ID column in shapefile (e.g. when read in via geopandas, this is a column label)
 shp_header = 'HUC10'
 # NWM forcing grid
-grid_path = 'D:/NWM_Cache/nwm.20210328/forcing_short_range/nwm.t00z.short_range.forcing.f001.conus.nc'
+grid_path = 'D:/NWM_Cache/nwm.20210328/forcing_short_range/nwm.t01z.short_range.forcing.f001.conus.nc'
 
 ########### shapefile info, check projection ##############
 

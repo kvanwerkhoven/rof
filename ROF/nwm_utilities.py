@@ -1,6 +1,10 @@
 ''' 
-    Collection of functions for working with and evaluating NWM
+    Collection of functions to process and evaluate NWM output,
+    including spatially-aggregated metrics at HUC10 scale, e.g. ROF
+    Code written by Katie van Werkhoven (ISED)
 '''
+
+# Import needed packages
 
 import numpy as np
 import pandas as pd
@@ -27,9 +31,8 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 
 ##################################################################################
-# Evaluation functions
+# ROF evaluation driver - including data download from Google here
 ##################################################################################
-
 
 #def rof_eval_with_download(domain, version, nwm_repo, out_dir, aux_dir, shp_dir, 
 def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
@@ -37,7 +40,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
                            metric, spatial_agg_method, event_thresh, order_max,
                            **kwargs):
 
-    ###############################################################################################
+    
     #  Get list of references times for the evaluation
     ###############################################################################################
 
@@ -59,7 +62,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         ref_time_list, version_list = reftimes(domain, eval_config, verif_config, eval_timing,
                                                start = start_time, end = end_time)
 
-    ###############################################################################################
+    
     #  Get filelists (alter to parse out specs as needed for DSTOR or WRDS)
     ###############################################################################################
 
@@ -100,7 +103,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
                                                                  'filelist' : [filelist]}))
             
 
-    ###############################################################################################
+    
     #  Download netcdf files needed for the evaluation (skip if data already on local source)
     ###############################################################################################
 
@@ -114,9 +117,8 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
     t_download_end = time.time()
     print("\n---Download complete - Total download time", (t_download_end - t_download_start)/60, " min.")
         
-       
+    # get static feature and huc10 info        
     print("\nReading static huc10 and feature information for domain: ", domain)
-    # get static feature and huc10 info 
     df_featinfo, df_gages, df_thresh, df_length = read_feature_info(domain, 
                                                                     version,
                                                                     in_dir)   
@@ -131,7 +133,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
     dict_metrics = {}
     dict_map = {}
     
-    ###############################################################################################
+    
     #  Begin reference time loop 
     ###############################################################################################
     
@@ -146,7 +148,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         
         t_reftime_start = time.time() 
         
-        ##############################################################################
+        
         #  Build flow arrays and calculate metrics (including ROF)
         ##############################################################################
         
@@ -180,7 +182,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         t_read_end = time.time()
         print("\n---Flow output processing time", (t_read_end - t_read_start), "sec")
             
-        ##############################################################################
+
         #  Compare a specified metric by reach
         ##############################################################################    
 
@@ -194,7 +196,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
                                            config_list, 
                                            metric)
         
-        ##############################################################################
+
         #  Compare aggregated spatial metric by HUC
         ##############################################################################    
         
@@ -210,7 +212,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         print("\n---Metric calculation time", (t_metrics_end - t_metrics_start), "sec")
         
         
-        ##############################################################################
+
         #  Identify objects, aka 'regions of interest' (spatial clusters)
         ##############################################################################
         
@@ -235,7 +237,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         df_region_reaches = df_reach.loc[df_reach['HUC10'].isin(df_region_hucs.index), df_reach.columns]
         df_region_reaches = pd.merge(df_region_reaches, df_region_hucs['obj'], right_index = True, left_on = "HUC10", how = "left")
         
-        ##############################################################################
+
         #  Calculate evaluation stats (by reach and huc for each object)
         ##############################################################################
         
@@ -264,7 +266,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         print("\n---Object processing time", (t_obj_end - t_obj_start), "sec")
 
         
-        ##############################################################################
+
         #  Calculate MAPs for HUCs in the regions
         ##############################################################################
         
@@ -303,8 +305,8 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         total_time = t_reftime_end - t_reftime_start
         print("\n---Ref time", ref_time, " total processing time", total_time, "sec (",total_time/60,"min)")
         
-        #############################################################################
-        #  Create and save graphics
+
+        #  Create and save graphics and output
         #############################################################################
           
         print("\nGenerating graphics and output files:", ref_time)

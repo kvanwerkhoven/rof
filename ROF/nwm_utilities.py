@@ -114,13 +114,8 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
     t_download_end = time.time()
     print("\n---Download complete - Total download time", (t_download_end - t_download_start)/60, " min.")
         
-        
-    ###############################################################################################
-    #  Begin reference time loop 
-    ###############################################################################################
-
+       
     print("\nReading static huc10 and feature information for domain: ", domain)
-
     # get static feature and huc10 info 
     df_featinfo, df_gages, df_thresh, df_length = read_feature_info(domain, 
                                                                     version,
@@ -135,9 +130,13 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
     df_filelists_forcing = df_filelists[df_filelists['variable'] == 'forcing']
     dict_metrics = {}
     dict_map = {}
-
-    t_eval_start = time.time() 
-
+    
+    ###############################################################################################
+    #  Begin reference time loop 
+    ###############################################################################################
+    
+    t_eval_start = time.time()     
+    
     # begin loop
     for i, ref_time in enumerate(ref_time_list):
     

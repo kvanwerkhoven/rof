@@ -31,7 +31,7 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 
 ##################################################################################
-# ROF evaluation driver - including data download from Google here
+# Main ROF evaluation driver - includes data download from Google in this version
 ##################################################################################
 
 #def rof_eval_with_download(domain, version, nwm_repo, out_dir, aux_dir, shp_dir, 
@@ -347,6 +347,9 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
     print("\n")   
 
 
+##################################################################################
+# Function definitions
+##################################################################################
 
 ##################################################################################
 # date and filelist functions

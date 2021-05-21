@@ -1,10 +1,6 @@
 ''' 
-    Collection of functions to process and evaluate NWM output,
-    including spatially-aggregated metrics at HUC10 scale, e.g. ROF
-    Code written by Katie van Werkhoven (ISED)
+    Collection of functions for working with and evaluating NWM
 '''
-
-# Import needed packages
 
 import numpy as np
 import pandas as pd
@@ -28,19 +24,22 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+from pathlib import Path
 
 
 ##################################################################################
-# Main ROF evaluation driver - includes data download from Google in this version
+# Evaluation functions
 ##################################################################################
+
 
 #def rof_eval_with_download(domain, version, nwm_repo, out_dir, aux_dir, shp_dir, 
 def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
                            eval_config, verif_config, eval_timing,
                            metric, spatial_agg_method, event_thresh, order_max,
+                           use_existing = True, all_touched = False, 
                            **kwargs):
 
-    
+    ###############################################################################################
     #  Get list of references times for the evaluation
     ###############################################################################################
 
@@ -62,8 +61,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         ref_time_list, version_list = reftimes(domain, eval_config, verif_config, eval_timing,
                                                start = start_time, end = end_time)
 
-    print(domain)
-    
+    ###############################################################################################
     #  Get filelists (alter to parse out specs as needed for DSTOR or WRDS)
     ###############################################################################################
 
@@ -81,9 +79,9 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         version = version_list[i]
         
         if version == 2.1:
-            version_dir = os.path.join(nwm_repo, "v2_1")
+            version_dir = nwm_repo / 'v2_1'
         else:
-            version_dir = os.path.join(nwm_repo, "v2_0")
+            version_dir = nwm_repo / 'v2_0'
         
         for config in config_list:
             for variable in var_list:
@@ -104,7 +102,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
                                                                  'filelist' : [filelist]}))
             
 
-    
+    ###############################################################################################
     #  Download netcdf files needed for the evaluation (skip if data already on local source)
     ###############################################################################################
 
@@ -118,14 +116,19 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
     t_download_end = time.time()
     print("\n---Download complete - Total download time", (t_download_end - t_download_start)/60, " min.")
         
-    # get static feature and huc10 info        
+        
+    ###############################################################################################
+    #  Begin reference time loop 
+    ###############################################################################################
+
     print("\nReading static huc10 and feature information for domain: ", domain)
+
+    # get static feature and huc10 info 
     df_featinfo, df_gages, df_thresh, df_length = read_feature_info(domain, 
                                                                     version,
                                                                     in_dir)   
 
-    df_hucinfo, gdf_huc10_dd, gdf_huc10_prj = read_huc10_info(domain, 
-                                                              in_dir)
+    df_hucinfo, gdf_huc10_dd, gdf_states = read_huc10_info(domain, in_dir)
 
     # initialize some stuff
     # subset of nwm output filelists for channel output and forcing output
@@ -133,13 +136,9 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
     df_filelists_forcing = df_filelists[df_filelists['variable'] == 'forcing']
     dict_metrics = {}
     dict_map = {}
-    
-    
-    #  Begin reference time loop 
-    ###############################################################################################
-    
-    t_eval_start = time.time()     
-    
+
+    t_eval_start = time.time() 
+
     # begin loop
     for i, ref_time in enumerate(ref_time_list):
     
@@ -149,7 +148,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         
         t_reftime_start = time.time() 
         
-        
+        ##############################################################################
         #  Build flow arrays and calculate metrics (including ROF)
         ##############################################################################
         
@@ -183,7 +182,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         t_read_end = time.time()
         print("\n---Flow output processing time", (t_read_end - t_read_start), "sec")
             
-
+        ##############################################################################
         #  Compare a specified metric by reach
         ##############################################################################    
 
@@ -193,27 +192,31 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
                 
         print("\nSummarizing evaluation metrics by reach for", config_list)
         df_reach = merge_reach_metrics(df_featinfo, 
-                                           dict_metrics, 
-                                           config_list, 
-                                           metric)
+                                       dict_metrics, 
+                                       config_list, 
+                                       metric)
+                                           
+        if order_max > 0:
+            df_reach_sub = df_reach[df_reach['order'] <= order_max]
+        else:
+            df_reach_sub = df_reach
         
-
+        ##############################################################################
         #  Compare aggregated spatial metric by HUC
         ##############################################################################    
         
         print("Summarizing evalution metrics by HUC10 for", config_list)    
-        df_huc = sum_huc10_metrics(df_featinfo, 
-                                       df_hucinfo, 
-                                       df_reach, 
-                                       config_list, 
-                                       metric, 
-                                       order_max = order_max)
+        df_huc = sum_huc10_metrics(df_hucinfo, 
+                                   df_reach_sub, 
+                                   config_list, 
+                                   metric, 
+                                   order_max = order_max)
         
         t_metrics_end = time.time()
         print("\n---Metric calculation time", (t_metrics_end - t_metrics_start), "sec")
         
         
-
+        ##############################################################################
         #  Identify objects, aka 'regions of interest' (spatial clusters)
         ##############################################################################
         
@@ -224,21 +227,23 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
                                                         df_huc,
                                                         gdf_huc10_dd, 
                                                         config_list, metric, 
-                                                        spatial_agg_method = "str_length",
+                                                        spatial_agg_method,
                                                         conv_radius = 1, 
                                                         mask_thresh = 1, 
                                                         gap_thresh = 1, 
-                                                        buffer_radius = 0.5)
+                                                        buffer_radius = 0.25)
         
         if df_region_hucs.empty:
             print('No HUCs meet the criteria, skipping this reference time: ', ref_time)
+            fig_title, fig_path = rof_fig_text(version, domain, verif_config, ref_time, out_dir, order_max, spatial_agg_method)
+            empty_fig(fig_path, fig_title, gdf_states)
             continue
         
         # get subset of reaches in the region and associated object number
         df_region_reaches = df_reach.loc[df_reach['HUC10'].isin(df_region_hucs.index), df_reach.columns]
         df_region_reaches = pd.merge(df_region_reaches, df_region_hucs['obj'], right_index = True, left_on = "HUC10", how = "left")
         
-
+        ##############################################################################
         #  Calculate evaluation stats (by reach and huc for each object)
         ##############################################################################
         
@@ -253,21 +258,14 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         df_huc_eval, df_stats_huc, col_heads = eval_stats_huc(df_region_hucs, 
                                                                   config_list, 
                                                                   metric,
-                                                                  spatial_agg_method = "str_length",
-                                                                  event_thresh = event_thresh)
-                  
-        # write temporary shapefile of region of interest hucs for MAP processing
-        # shapefile will be overwritten for each reference time
-        shp_file = out_dir + '/shp/temp_region.shp'
-        check_projection(domain, 
-                         shp_file, 
-                         gdf_region_hucs)              
+                                                                  spatial_agg_method = spatial_agg_method,
+                                                                  event_thresh = event_thresh)                              
                   
         t_obj_end = time.time()
         print("\n---Object processing time", (t_obj_end - t_obj_start), "sec")
 
         
-
+        ##############################################################################
         #  Calculate MAPs for HUCs in the regions
         ##############################################################################
         
@@ -275,7 +273,11 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         
         t_map_start = time.time()
         
+        print('\nProjecting geometry for MAP calculations')
+        gdf_proj, is_reproj = geom_to_crs(gdf_region_hucs, domain)
+        
         # calculate MAPs for each config
+        map_success = pd.Series([True, True], index = config_list)
         for config in config_list:
         
             print("\nCalculating mean areal precip for config: ", config, ", reference time: ", ref_time)
@@ -283,17 +285,19 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
             filelist = df_filelists_forcing.loc[(df_filelists_forcing['ref_time'] == ref_time) & 
                                                 (df_filelists_forcing['config'] == config),'filelist'][0]
             
-            # get map timeseries for the hucs within the region,
+            # get map timeseries for timesteps 1-18 for the hucs within the region,
+            # (do not include timestep 0 from the filelist)
             # data are also currently written to a csv file - will update to SQLite 
             df_map = huc_mean_areal_precip(version_dir, 
-                                           domain, 
-                                           ref_time, 
-                                           filelist, 
-                                           metric, 
-                                           gdf_region_hucs, 
-                                           shp_file, 
-                                           shp_tag = "eval_reg", 
-                                           use_existing = True)
+                                       ref_time,
+                                       config,
+                                       filelist[1:], 
+                                       metric, 
+                                       gdf_proj, 
+                                       shp_tag = "eval_reg", 
+                                       use_existing = use_existing, 
+                                       all_touched = all_touched)
+                                                                       
             
             # store MAP dataframes in a dictionary
             dict_map[config] = df_map
@@ -306,38 +310,39 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         total_time = t_reftime_end - t_reftime_start
         print("\n---Ref time", ref_time, " total processing time", total_time, "sec (",total_time/60,"min)")
         
-
-        #  Create and save graphics and output
+        #############################################################################
+        #  Create and save graphics
         #############################################################################
           
         print("\nGenerating graphics and output files:", ref_time)
         
         gdf_region_hucs_eval = region_shapefile(dict_map,                                                                
                                                 df_huc_eval, 
-                                                df_stats_huc, 
                                                 gdf_huc10_dd, 
                                                 eval_config, 
                                                 verif_config, 
                                                 col_heads)    
         
-        nine_panel_conus(dict_map, 
-                         df_stats_huc, 
-                         gdf_region_hucs_eval,
-                         gdf_bounds,
-                         ref_time,
-                         domain,
-                         event_thresh, 
-                         eval_config,
-                         verif_config,
-                         col_heads,
-                         out_dir)
+        fig_title, fig_path = rof_fig_text(version, domain, verif_config, ref_time, out_dir, order_max, spatial_agg_method)
+        
+        
+        nine_panel_conus(df_stats_huc, 
+                        gdf_region_hucs_eval,
+                        gdf_bounds,
+                        df_reach_sub,
+                        event_thresh, 
+                        eval_config,
+                        verif_config,
+                        fig_path,
+                        fig_title,
+                        gdf_states)
+        
         
         # write output for this reference time
         # shapefile containing eval results
         write_output(ref_time, 
                      out_dir, 
                      domain,
-                     verif_config, 
                      gdf_region_hucs_eval, 
                      df_gages, 
                      gdf_bounds)
@@ -348,9 +353,6 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
     print("\n")   
 
 
-##################################################################################
-# Function definitions
-##################################################################################
 
 ##################################################################################
 # date and filelist functions
@@ -544,7 +546,7 @@ def config_specs(config, domain, version):
     
     
       
-def variable_specs(domain, version):
+def variable_specs(domain):
         
     # build dataframe of variable group info and processing flags
     df_var_specs = pd.DataFrame(
@@ -567,7 +569,7 @@ def variable_specs(domain, version):
     
 
 
-def build_filelist(ref_time, version, domain, variable, config, eval_config, verif_config): #eval_timing):
+def build_filelist(ref_time, version, domain, variable, config, eval_config, verif_config):
 
     # if config = 'latest_ana', will be using a mix of std and ext ana, start with standard
     if config == 'latest_ana':
@@ -579,7 +581,7 @@ def build_filelist(ref_time, version, domain, variable, config, eval_config, ver
 
     # get base dataframe of config and variable info
     df_config = config_specs(config, domain, version)
-    df_var = variable_specs(domain, version)
+    df_var = variable_specs(domain)
 
     # base configuration directory prefix (e.g. 'forcing')
     dir_prefix = df_var.loc[variable, 'dir_prefix']
@@ -640,7 +642,7 @@ def build_filelist(ref_time, version, domain, variable, config, eval_config, ver
     # only used for AnA if evaluating a historical sim (i.e., AnA comp to usgs) 
     if is_forecast or not fcst_eval:
         #print('case 1')
-        df_parts = get_reftime_fileparts(ref_time, config, n_hours, df_parts, ts_int,
+        df_parts = get_reftime_fileparts(ref_time, n_hours, df_parts, ts_int,
                                           is_forecast, use_tm02)    
                                          
     # Case 2 - use the best available AnA at the time of the specified ref-time
@@ -680,13 +682,15 @@ def build_filelist(ref_time, version, domain, variable, config, eval_config, ver
         filename = ".".join(filename_parts)
         
         # add the full path to the list
-        filelist.append(os.path.join(row['datedir'], config_dir, filename))
+        
+        filelist.append(Path(row['datedir']) / config_dir / filename)
+        #filelist.append(os.path.join(row['datedir'], config_dir, filename))
  
     return filelist
     
     
     
-def get_reftime_fileparts(ref_time, config, n_hours, df_parts, ts_int, is_forecast, use_tm02):
+def get_reftime_fileparts(ref_time, n_hours, df_parts, ts_int, is_forecast, use_tm02):
     '''
     straightforward filenames for all timesteps of a given ref_time and configuration
     '''   
@@ -867,30 +871,35 @@ def download_nwm_from_google(version_dir, filelist):
     for i, nwm_path in enumerate(filelist):
            
         # parse out nwm directories and filename from full_path
-        datedir = nwm_path.split("\\")[0]
-        config_dir = nwm_path.split("\\")[1]
-        filename = nwm_path.split("\\")[2]
+        datedir = nwm_path.parts[0] #split("\\")[0]
+        config_dir = nwm_path.parts[1] #.split("\\")[1]
+        filename = nwm_path.parts[2] #.split("\\")[2]
         
         # rebuild with UTF-8 encoding for directory slash   
         slash = "%2F"
         encoded_nwm_path = datedir + slash + config_dir + slash + filename    
 
+        # check if datedir exists
+        if not (version_dir / datedir).exists():
+            (version_dir / datedir).mkdir()
+
         # build netcdf_dir
-        netcdf_dir = os.path.join(version_dir, datedir, config_dir)
+        #netcdf_dir = os.path.join(version_dir, datedir, config_dir)
+        netcdf_dir = version_dir / nwm_path.parent
 
         # check if output directory exists, if not create
-        if not os.path.exists(netcdf_dir):   
-            os.makedirs(netcdf_dir)
+        if not netcdf_dir.exists():   
+            netcdf_dir.mkdir()
 
         # build full output path
-        full_path = os.path.join(netcdf_dir, filename)
+        full_path = netcdf_dir / filename        
 
         status = ""    
         
         # check if file exists in cache, if not, download it 
         print(full_path)
-        if os.path.exists(full_path):            
-            print("File already in cache: ", full_path)
+        if full_path.exists():            
+            print("File already in cache: ", str(full_path))
             status = "in_cache"                   
         else:   
             t_start = time.time()                 
@@ -913,7 +922,7 @@ def get_from_google(encoded_nwm_path, full_path):
     # build Google URL
     url_prefix = "https://storage.googleapis.com/download/storage/v1/b/national-water-model/o/"
     url_suffix = "?alt=media"
-    url = url_prefix + encoded_nwm_path + url_suffix  
+    url = url_prefix + encoded_nwm_path + url_suffix
     
     print("Fetching from Google Cloud @ URL " + url)
 
@@ -921,7 +930,9 @@ def get_from_google(encoded_nwm_path, full_path):
     
     if response.status_code == 200:
         print("writing file to: ", full_path)
-        with open(full_path, "wb") as f:
+        #with open(full_path, "wb") as f:
+        #    f.write(response.content)
+        with full_path.open("wb") as f:
             f.write(response.content)
         status = 'downloaded'
     else:
@@ -943,7 +954,7 @@ def read_feature_info(domain, version, in_dir):
         else:
             feature_file = "NWM_features_info_conus_2_0.csv"
 
-    feature_path = in_dir + feature_file
+    feature_path = in_dir / feature_file
 
     # read feature info
     df_featinfo = pd.read_csv(feature_path)
@@ -964,10 +975,14 @@ def read_huc10_info(domain, in_dir):
 
     if domain == 'hawaii':
         huc_shp_dd = "HUC10_Hawaii_dd.shp"
+        states_shp_dd = "US_States_Hawaii.shp"
     else:
         huc_shp_dd = "HUC10_Simplified005_dd.shp"
+        states_shp_dd = "US_States_CONUS.shp"
         
-    df_hucinfo = pd.read_csv(in_dir + huc_csv, index_col = 0)
+    #path = in_dir / huc_csv
+        
+    df_hucinfo = pd.read_csv(in_dir / huc_csv, index_col = 0)
     df_hucinfo = df_hucinfo.loc[:,['tot_feats','Centroid_Lat','Centroid_Lon']]
     
     # rename centroid lat and lon - needed for later functions
@@ -976,17 +991,20 @@ def read_huc10_info(domain, in_dir):
                                                 
     
     # read shapefiles - need projected for MAP processing and dd for graphics/maps
-    gdf_huc_dd = gpd.read_file(in_dir + huc_shp_dd)
+    gdf_huc_dd = gpd.read_file(in_dir / huc_shp_dd)
     gdf_huc_dd["HUC10"] = gdf_huc_dd["HUC10"].astype("int64")
     gdf_huc_dd = gdf_huc_dd.set_index('OBJECTID')
+    
+    # read states for figures
+    gdf_states = gpd.read_file(in_dir / states_shp_dd)
     
     # add polygon centroids to geodataframe
     gdf_huc_dd = gdf_huc_dd.merge(df_hucinfo[['lat','lon']], how = 'left', left_on = 'HUC10', right_index = True)
     
     # project dd to nwm grid projection
-    gdf_huc_prj, is_proj = shp_to_crs(gdf_huc_dd, domain)   
+    #gdf_huc_prj, is_proj = shp_to_crs(gdf_huc_dd, domain)   
       
-    return df_hucinfo, gdf_huc_dd, gdf_huc_prj
+    return df_hucinfo, gdf_huc_dd, gdf_states #, gdf_huc_prj
 
 ######################################################################################
 # data processing - read/process flow data
@@ -1004,9 +1022,9 @@ def build_flow_array(filelist, version_dir, feat_list, is_forecast):
     
     for ts, nwm_file in enumerate(filelist):
 
-        print('Reading', nwm_file)
+        print('Reading', str(nwm_file))
         
-        path = os.path.join(version_dir, nwm_file)
+        path = version_dir / nwm_file
 
         #read flow, if is_forecast = True, ts_nudge will return empty
         ts_flow, ts_nudge, success = get_flow_from_path(version_dir, nwm_file, feat_list, is_forecast)           
@@ -1031,18 +1049,18 @@ def build_flow_array(filelist, version_dir, feat_list, is_forecast):
                 df_nudge[ts] = ts_nudge[inds]
 
         else:
-            print('file read failed: ', nwm_path)         
+            print('file read failed: ', str(nwm_file))         
             
     return df_flow, df_nudge, success
         
     
-def get_flow_from_path(cache_path, path, feat_list, is_forecast):
+def get_flow_from_path(version_dir, path, feat_list, is_forecast):
     ''' 
     Read channel output and nudge (if app) for specified filename
     '''
-    path = os.path.join(cache_path, path)
+    path = version_dir / path
 
-    if os.path.exists(path):
+    if path.exists():
         ds = xr.open_dataset(path, engine="netcdf4")
         success = True
         
@@ -1062,7 +1080,7 @@ def get_flow_from_path(cache_path, path, feat_list, is_forecast):
         
     else:
         success = False
-        print('file read failed: ', path)
+        print('file read failed: ', str(path))
         flow = []
         nudge = []
         
@@ -1341,7 +1359,7 @@ def merge_reach_metrics(df_featinfo, dict_metrics, configs, metric):
     return df_reach
       
 
-def sum_huc10_metrics(df_featinfo, df_hucinfo, df_reach, configs, metric, order_max = 5):
+def sum_huc10_metrics(df_hucinfo, df_reach, configs, metric, order_max = 4):
     '''
 
     '''
@@ -1357,10 +1375,10 @@ def sum_huc10_metrics(df_featinfo, df_hucinfo, df_reach, configs, metric, order_
     df_reach = df_reach[(df_reach[ecol] >= 0) | (df_reach[vcol] >= 0)]
 
     # keep only reaches of order <= order_max
-    # if value is zero or neg, assume no limit, set to 1000 (include all reaches)
-    if order_max <= 0:
-        order_max = 1000
-    df_reach = df_reach[df_reach['order'] <= order_max]
+    # if value is zero or neg, skip - assume no limit
+    
+#    if order_max > 0:
+#        df_reach = df_reach[df_reach['order'] <= order_max]
     
     # keep only reaches where huc is defined (non-missing)
     df_reach = df_reach[df_reach['HUC10'] > 0]
@@ -1490,6 +1508,8 @@ def eval_stats_huc(df_huc, configs, metric,
         suffix = 'perlen'
     else:
         suffix = 'pernum'
+        
+    
     
     # generate column headers to read huc metrics dataframe, add suffix if app.
     cols_read = get_column_headers(configs, metric, suffix = suffix)
@@ -1581,7 +1601,7 @@ def contingency(df_data):
 ######################################################################################
 
 def resolve_objects(df_huc, gdf_huc, configs, metric = "rof", spatial_agg_method = "str_length",
-                    conv_radius = 1, mask_thresh = 1, gap_thresh = 0.5, buffer_radius = 0.5):
+                    conv_radius = 1, mask_thresh = 1, gap_thresh = 0.5, buffer_radius = 0.25):
     '''
     Using concepts from MODE, resolve 'objects' (regions of interest) across the domain
     
@@ -1592,7 +1612,7 @@ def resolve_objects(df_huc, gdf_huc, configs, metric = "rof", spatial_agg_method
         suffix = 'perlen'
         totcol = 'tot_strlen'
     else:
-        suffix = 'percnt'
+        suffix = 'pernum'
         totcol = 'tot_feats'
     
     # generate column headers, add suffix
@@ -1621,6 +1641,7 @@ def resolve_objects(df_huc, gdf_huc, configs, metric = "rof", spatial_agg_method
     # split and assign object numbers to analyze separately based on separation distance gap_thresh
     df_objs_split = split_objects(df_mask, gap_thresh)
     objects = list(set(df_objs_split['obj']))
+    max_obj = max(objects)
     
     # drop objects with fewer than X hucs over Y%
     df_objs_drop = drop_objects(df_objs_split, df_huc, min_cluster = 5, cluster_thresh = 10)    
@@ -1629,18 +1650,14 @@ def resolve_objects(df_huc, gdf_huc, configs, metric = "rof", spatial_agg_method
         empty = pd.DataFrame()
         return empty, empty, empty
 
-    # get the outer boundary around each object, add a buffer
+    # get the outer boundary around each remaining object, add a buffer
     print('Calculating and buffering object boundary(s)')
-    gdf_bounds, gdf_obj_hucs = obj_bound_buff(df_objs_drop, gdf_huc, buffer_radius = 0.25, alpha = 1.0)
+    gdf_bounds, gdf_obj_hucs = obj_bound_buff(df_objs_drop, gdf_huc, max_obj, buffer_radius = buffer_radius, alpha = 1.0)
 
     # add the rest of the info back to huc geodataframe
     gdf_region_hucs = gdf_obj_hucs.merge(df_huc[[totcol, ecol, vcol, 'max','diff']], 
                                         how = 'left', left_index = True, right_index = True).fillna(value = 0)
     df_region_hucs = pd.DataFrame(gdf_region_hucs.drop(columns='geometry'))
-   
-    # fill and add buffer the objects
-    #df_objs_buff = object_boundary(df_objs_split, df_huc, objects, buffer_radius)    
-    #df_objs_buff = expand_objects(df_objs_split, df_huc, objects, buffer_radius)  
     
     return gdf_bounds, gdf_region_hucs, df_region_hucs #df_region, df_objs_split
     
@@ -1679,6 +1696,9 @@ def get_object_mask(points, R, T):
     
 def split_objects(points, gap_thresh):
     '''
+    
+    THIS IS NO LONGER USED
+    
     separates points into groups in each dimension (lat/lon), separated by distance gap_thresh
     then finds intersecting regions between to two dimensions, and assigns object numbers to 
     the intersecting areas
@@ -1744,7 +1764,7 @@ def get_regions(points, dim, gap_thresh):
 
     return regions
     
-def obj_bound_buff(df_objs, gdf, buffer_radius = 0.5, alpha = 1.0):
+def obj_bound_buff(df_objs, gdf, max_obj, buffer_radius, alpha = 1.0):
     '''
     get the 'concave hull' around the polygon points making up each object
     and add a fixed buffer
@@ -1756,8 +1776,6 @@ def obj_bound_buff(df_objs, gdf, buffer_radius = 0.5, alpha = 1.0):
     #set up a geodataframe of hucs in regions
     gdf_hucs = gdf.set_index('HUC10')
     gdf_hucs['obj'] = np.full(len(gdf), -999)        
-
-    max_obj = max(objects)
 
     for obj_num in objects:
 
@@ -1771,10 +1789,6 @@ def obj_bound_buff(df_objs, gdf, buffer_radius = 0.5, alpha = 1.0):
             points.append(Point(pt))
             coords.append(pt)    
 
-             #for pt in list(row['geometry'].exterior.coords): 
-             #   points.append(Point(pt))
-             #   coords.append(pt)
-
         # get the outer boundary and add buffer
         print('Getting outer boundary of object', obj_num)
         concave_hull, edge_points = alpha_shape(points, alpha=alpha)
@@ -1784,32 +1798,38 @@ def obj_bound_buff(df_objs, gdf, buffer_radius = 0.5, alpha = 1.0):
         # separate polygons and add an object number
         obj_list = [obj_num]    
         if concave_hull_buff.geom_type == 'MultiPolygon':
+            print('re-splitting object', obj_num)
             poly_list = list(concave_hull_buff)
             for i in range(1,len(poly_list)):
                 max_obj += 1
                 obj_list.append(max_obj)
         else:
-            poly_list = concave_hull_buff
+            poly_list = [concave_hull_buff]
 
         # add the outer boundary(s) to geodataframe
         new_dict = {'obj' : obj_list, 'geometry': poly_list}
         gdf_new = gpd.GeoDataFrame(new_dict)
         gdf_bounds = gdf_bounds.append(gdf_new)
         
-        print('Getting set of hucs within the buffered boundary for object ', obj_num)
+        # rebuild set of hucs within each object
         
         # get min/max lat/lat to subset the huc10s
         x = [p.coords.xy[0] for p in points]
-        y = [p.coords.xy[1] for p in points]
-
+        y = [p.coords.xy[1] for p in points]    
+        
         # get a subset of candidate hucs
         sub_gdf = gdf[(gdf['lon'] >= np.min(x)-1) & (gdf['lon'] <= np.max(x)+1) & \
-                      (gdf['lat'] >= np.min(y)-1) & (gdf['lat'] <= np.max(y)+1)]
+                      (gdf['lat'] >= np.min(y)-1) & (gdf['lat'] <= np.max(y)+1)]    
+        
+        for i, obj in enumerate(obj_list):
+            
+            bound = poly_list[i]
+            print('Getting set of hucs within the buffered boundary for object ', obj)
 
-        for index, row in sub_gdf.iterrows():
-            p = Point(row['lon'], row['lat'])
-            if p.within(concave_hull_buff):
-                gdf_hucs.loc[row['HUC10'], 'obj'] = obj_num
+            for index, row in sub_gdf.iterrows():
+                p = Point(row['lon'], row['lat'])
+                if p.within(bound):
+                    gdf_hucs.loc[row['HUC10'], 'obj'] = obj
 
     # drop the hucs with no object assignment
     gdf_hucs = gdf_hucs[gdf_hucs['obj'] > 0]
@@ -1818,46 +1838,6 @@ def obj_bound_buff(df_objs, gdf, buffer_radius = 0.5, alpha = 1.0):
     gdf_bounds = gdf_bounds.set_index('obj')
     
     return gdf_bounds, gdf_hucs
-    
-    
-def expand_objects(df_objs, df_huc, objects, buffer_radius):
-    '''
-    Add points to the mask around the perimeter to include 
-    true negatives in the analysis
-    '''
-    
-    df_objs_buff = pd.DataFrame()
-    
-    for obj_num in objects:
-       
-        mask_obj = df_objs[df_objs['obj'] == obj_num]
-        mask_obj_buff = add_buffer_to_object(mask_obj, df_huc, buffer_radius, obj_num)
-        df_objs_buff = df_objs_buff.append(mask_obj_buff)
-        
-    # return final dataframes and objects
-    
-    return df_objs_buff
-    
-    
-def add_buffer_to_object(points, allpts, R, obj_num):
-
-    points_buff = pd.DataFrame()
-    
-    for i in range(points.shape[0]):
-        ind = points.index.values[i]
-        lat = points.loc[ind,'lat']
-        lon = points.loc[ind,'lon']
-
-        # get subset of points within radius of current in-mask huc
-        allpts_sub = allpts[(np.sqrt((allpts['lat'] - lat)**2 + (allpts['lon'] - lon)**2)) <= R]#.copy()
-        
-        # append to dataframe, drop duplicates
-        points_buff = points_buff.append(allpts_sub).drop_duplicates()
-        
-    # add object number
-    points_buff['obj'] = np.full(points_buff.shape[0], obj_num)
-    
-    return points_buff
     
     
 def drop_objects(df_objs, df_huc, min_cluster = 5, cluster_thresh = 10):
@@ -1956,12 +1936,14 @@ def check_projection(domain, shp_file, gdf_poly):
 
 
     
-def huc_mean_areal_precip(version_dir, domain, ref_time, filelist, 
-                          metric, gdf_poly, shp_file,
+def huc_mean_areal_precip(version_dir, ref_time,
+                          config, filelist, 
+                          metric, gdf_poly, #shp_file,
                           shp_header = "HUC10", 
                           shp_tag = "eval_reg",
                           outdir_suffix = "mean",
-                          use_existing = True):
+                          use_existing = True, 
+                          all_touched = False):
     '''
     shp_header = column header for IDs in the geodataframe
     shp_tag = region tag - in this case region of interest, not full domain  
@@ -1969,68 +1951,107 @@ def huc_mean_areal_precip(version_dir, domain, ref_time, filelist,
     read_if_exists = read MAP file if already exists in cache - set to False to override
     '''
            
-    # add a tag to the reference time string to identify the
+    # add a tag to the reference time string to identify that
     # this MAP was generated for an evaluation, which (for ana) 
     # dicatates the timesteps included
     ref_tag = metric
     
-    if gdf_poly.index.name == shp_header:
-        polyids = gdf_poly.index.values 
-    elif shp_header in gdf_poly.columns:
-        polyids = gdf_poly[shp_header].values 
+    # set of polygons to calculate maps - create a copy to maintain orig list, calc list may change below
+    calc_poly = gdf_poly.copy()
+    
+    merge_prior = False
+
+    if calc_poly.index.name != shp_header:
+        calc_poly.set_index(shp_header)
+
+    polyids = calc_poly.index.values 
     
     # Build output dir for MAP files
-    mapout_dir = build_mapout_dir(version_dir, ref_time, filelist[0], outdir_suffix)
+    mapout_dir = build_mapout_dir(version_dir, ref_time, config, outdir_suffix)
     
     # Build MAP output filename, check if it already exists
-    map_path, map_exists = get_map_path(mapout_dir, ref_time, filelist[0], shp_tag, ref_tag)
-    
+    map_path, map_exists = get_map_path(mapout_dir, ref_time, config, filelist[0], shp_tag, ref_tag)
+
     # if skip flag = True, output already exsits and not generating individual step output, skip iteration
     if use_existing:
         if map_exists:
             print('  MAP timeseries output already exists for this ref time - reading the file')
             df_map = pd.read_csv(map_path, index_col = 0)
             
-            return df_map
+            check = np.isin(polyids, df_map.index)
             
-        else:
-            df_map = pd.DataFrame()
+            # check if all needed HUC10s were processed previously, are included in this file
+            if not all(check):
+                print('  MAPs do not exist for all needed HUC10s')
+                df_map_prior = df_map.copy()
+                
+                calc_poly = calc_poly[~check]
+                polyids = calc_poly.index.values
+                
+                # flag to merge the prior and new MAPs at the end
+                merge_prior = True
+          
+            else:
+                print('  MAPs already processed for all HUC10s in the region') 
+                return df_map
+            
     
     # loop through a filelist and generate MAP timeseries file 
     # (currently csv, need to update to SQLite)
-    df_map = map_by_filelist(version_dir, filelist, shp_file, polyids, shp_header)
-        
-    # add the timeseries sum to the dataframe, write file
-    if not df_map.empty:
+    df_map = map_by_filelist(version_dir, filelist, calc_poly, all_touched)
+
+    # check number of timesteps missing
+    nmissing = df_map.isnull().sum(axis=1).max()
+    
+    # if only 1 timestep missing, calculate the sum, otherwise set sum to missing
+    if not df_map.empty and nmissing < 2:
         df_map['sum_ts'] = df_map.iloc[:,1:].sum(axis = 1)   
+        
+        if merge_prior:
+            df_map = df_map_prior.append(df_map).sort_index()
+        
         print('Writing time series for this ref time', map_path)
         df_map.to_csv(map_path)    
+    else:
+        # NaN if more than 1 timestep missing
+        df_map['sum_ts'] = np.full(len(polyids), np.nan)
+        print('MAP not generated for reference time: ', ref_time)
+    
+    # losing the index header somewhere
+    df_map.index = df_map.index.rename(shp_header)
         
     return df_map
     
 
-def build_mapout_dir(base_dir, ref_time, nwm_path, suffix):
+def build_mapout_dir(base_dir, ref_time, config, suffix):
 
-    # parse out nwm directories and filename from full_path
+    # create directory name from ref time and config
     datedir = ref_time.strftime("nwm.%Y%m%d")
-    # datedir = nwm_path.split("\\")[0]
-    config_dir = nwm_path.split("\\")[1]
-    filename = nwm_path.split("\\")[2]
+    config_dir = 'forcing_' + config
+    
+    # datedir = nwm_path.split("\\")[0]    
+    #config_dir = nwm_path.split("\\")[1]
+    #filename = nwm_path.split("\\")[2]
 
     # build output path
-    mapout_dir = os.path.join(base_dir, datedir, config_dir + "_" + suffix)
+    mapout_dir = base_dir / datedir / (config_dir + "_" + suffix)
 
     # check if output directory exists, if not create
-    if not os.path.exists(mapout_dir):   
-        os.makedirs(mapout_dir)
+    if not mapout_dir.exists():   
+        mapout_dir.mkdir()
         
     return mapout_dir
     
 
-def get_map_path(mapout_dir, ref_time, nwm_path, shp_tag, ref_tag):
+def get_map_path(mapout_dir, ref_time, config, nwm_path, shp_tag, ref_tag):
 
     # parse out first 4 sections of nwm filename from full_path
-    parts = nwm_path.split("\\")[2].split(".")[0:4]
+    parts = nwm_path.name.split(".")[0:4]
+    
+    # make sure the configuration portion of the filename matches variable 'config'
+    # needed for the ROF 'latest ana' case (first filename could be either
+    # standard or extended AnA)
+    parts[2] = config
     
     # replace timestep indentifier (e.g. f001) with "series", 
     #    "conus" with shp_tag, and extension to "csv"
@@ -2039,59 +2060,70 @@ def get_map_path(mapout_dir, ref_time, nwm_path, shp_tag, ref_tag):
     ref_hr_str = ref_time.strftime("t%Hz")
     parts[1] = ref_hr_str
     
-    if mapout_dir.split("\\")[3] == "forcing_realtime_mean":
+    if mapout_dir.name == "forcing_realtime_mean":
         parts[2] = ref_tag
     elif ref_tag:
         parts[1] = parts[1] + "." + ref_tag    
 
     filename = ".".join(parts)
 
-    path = os.path.join(mapout_dir, filename)
+    path = mapout_dir / filename
 
     # check if file exists, if yes, return flag to skip
     file_exists = False
-    if os.path.exists(path):   
+    if path.exists():   
         file_exists = True 
         
     return path, file_exists
 
 
-def map_by_filelist(version_dir, filelist, shp_file, polyids, shp_header):
+#def map_by_filelist(version_dir, filelist, shp_file, polyids, shp_header):
+def map_by_filelist(version_dir, filelist, calc_poly, all_touched):#, shp_header):
 
     df_map = pd.DataFrame()   
+    success = True
+    npoly = len(calc_poly)
     
     # Loop through files in the timeseries  
     for i, nwm_path in enumerate(filelist):
         
         t_start = time.time()
 
-        grid_path = os.path.join(version_dir, nwm_path)
+        grid_path = version_dir / nwm_path
 
-        # add catch if grid wasn't downloaded/doesn't exist
-        if not os.path.exists(grid_path):   
-            sys.exit('grid missing - cannot calculate MAP')
-
-        ############# calculate mean areal values for polygons ##############
-        
-        print('Calculating mean areal values for grid: ', nwm_path)
-        df_zstats = get_grid_stats(grid_path, shp_file, polyids, shp_header)
-
-        # if failed for some reason, e.g. netcdf file is corrupt, exit
-        if df_zstats.empty:
-            sys.exit('grid processing failed - cannot calculate MAP')
-
-        # convert from mm s-1 to mm hr-1
-        df_zstats["mean"] = df_zstats["mean"] * 60 * 60  
-     
-        if i == 0: 
-            # first timestep, keep the count, after that only keep mean
-            df_map = df_zstats.loc[:,['count','mean']]
-            df_map = df_map.rename(columns={"count":"cell_count"})
+        # add catch if grid wasn't downloaded/doesn't exist, fill with NaN
+        if not grid_path.exists():   
+            print('grid missing for grid: ', str(nwm_path))
+            df_map['mean'] = np.full(npoly,np.nan)
+            
         else:
-            df_map = pd.concat([df_map, df_zstats[['mean']]], axis = 1)
 
-        fileparts = nwm_path.split(".")
-        df_map = df_map.rename(columns={"mean": fileparts[2] + "-" + fileparts[-3]})
+            ############# calculate mean areal values for polygons ##############
+            
+            print('Calculating mean areal values for grid: ', str(nwm_path))
+            #df_zstats = get_grid_stats(grid_path, shp_file, polyids, shp_header)
+            df_zstats = get_grid_stats(grid_path, calc_poly, all_touched)#, shp_header)
+
+            # if failed for some reason, e.g. netcdf file is corrupt, fill with NaN
+            if df_zstats.empty:
+                print('\n !! GRID PROCESSING FAILED FOR : ', str(nwm_path))
+                
+                df_zstats = pd.DataFrame({'mean' : np.full(npoly,np.nan)}, index = polyids)
+                #sys.exit('grid processing failed - cannot calculate MAP')
+            
+            # convert from mm s-1 to mm hr-1
+            df_zstats["mean"] = df_zstats["mean"] * 60 * 60  
+         
+            if i == 0: 
+                # first timestep, keep the count, after that only keep mean
+                df_map = df_zstats.loc[:,['count','mean']]
+                df_map = df_map.rename(columns={"count":"cell_count"})
+            else:
+                df_map = pd.concat([df_map, df_zstats[['mean']]], axis = 1)
+
+        fileparts = nwm_path.name.split(".")
+        df_map = df_map.rename(columns={"mean": fileparts[1] + "-" + fileparts[-3]})
+        df_map.index = df_map.index.rename(calc_poly.index.name)
 
         t_stop = time.time()
         print('Elapsed time this file', t_stop - t_start)   
@@ -2099,7 +2131,7 @@ def map_by_filelist(version_dir, filelist, shp_file, polyids, shp_header):
     return df_map
     
         
-def shp_to_crs(gdf, domain, **kwargs):
+def geom_to_crs(gdf, domain, **kwargs):
 
     # WKT strings extracted from NWM grids
     wkt = 'PROJCS["Sphere_Lambert_Conformal_Conic",GEOGCS["GCS_Sphere",DATUM["D_Sphere",SPHEROID["Sphere",6370000.0,0.0]],\
@@ -2124,7 +2156,7 @@ def shp_to_crs(gdf, domain, **kwargs):
         gdf = gdf.set_crs(epsg=4269)
         
     elif check_crs.name == crs_name:
-        print('Shapefile already in correct projection: ', check_crs.name)
+        print('Geometry already in correct projection: ', check_crs.name)
         return gdf, False
    
     # if a grid was passed in as an arg with key "nwm_grid", get the wkt from the grid attributes
@@ -2142,7 +2174,7 @@ def shp_to_crs(gdf, domain, **kwargs):
                 print('only ""nwm_grid"" supported so far, using default nwm_grid WKT instead')
                               
     nwm_crs = CRS.from_string(wkt)
-    print("Projecting shapefile to ", nwm_crs.name) 
+    print("Projecting geometry to", nwm_crs.name) 
     gdf_reproj = gdf.to_crs(nwm_crs)
     #print("Reprojecting shapefile to ", gdf_reproj.crs.name)
         
@@ -2157,12 +2189,13 @@ def affine_from_latlon(lat, lon):
     return trans * scale
 
 
-def get_grid_stats(grid_path, shp_file, polyids, shp_header):
+#def get_grid_stats(grid_path, shp_file, polyids, shp_header):
+def get_grid_stats(grid_path, calc_poly, all_touched):#, shp_header):
 
     try:
         ds_sr = xr.open_dataset(grid_path)
     except OSError:
-        print('Cannot open file: ', grid_path)
+        print('Cannot open file: ', str(grid_path))
         return pd.DataFrame()
         
     rain = ds_sr["RAINRATE"].values
@@ -2178,27 +2211,71 @@ def get_grid_stats(grid_path, shp_file, polyids, shp_header):
     scale = Affine.scale(lon[1] - lon[0], lat_flip[1] - lat_flip[0])    
     transform = trans * scale
 
-    zstats = zonal_stats(shp_file, rain_flip, affine=transform, nodata = -999, stats="count mean")
+    #zstats = zonal_stats(shp_file, rain_flip, affine=transform, nodata = -999, stats="count mean")
+    zstats = zonal_stats(vectors = calc_poly['geometry'], raster = rain_flip, affine=transform, 
+                         nodata = -999, stats="count mean", all_touched = all_touched)
 
-    df_zstats = pd.DataFrame(zstats)
-    df_zstats[shp_header] = polyids 
-    df_zstats = df_zstats.set_index(shp_header)
+    df_zstats = pd.DataFrame(zstats, index = calc_poly.index)
+    #df_zstats[shp_header] = calc_poly.index #polyids 
+    #df_zstats = df_zstats.set_index(shp_header)
 
     #gdf_zstats = gdf_hucs.merge(df_zstats, on = 'HUC10')
 
     return df_zstats
     
     
-def nine_panel_conus(dict_map, df_stats_huc, gdf_region_hucs_eval, gdf_bounds,
-                     ref_time, domain, event_thresh, eval_config, verif_config, col_heads, out_dir):
+def rof_fig_text(version, domain, verif_config, ref_time, out_dir, order_max, spatial_agg_method):
+
+    verif_abbrev = pd.Series(['Standard','Extended','Current Avail'],
+             index = ["analysis_assim", "analysis_assim_extend", "latest_ana"])
+             
+    # set up text for overall figure heading
+    vtime_start_str = (ref_time + timedelta(hours=1)).strftime("%m-%d %Hz")
+    vtime_end_str = (ref_time + timedelta(hours=18)).strftime("%m-%d %Hz")
+    fig_title = 'Ref Time: ' + ref_time.strftime("%Y-%m-%d %Hz") + \
+                     ' (Valid Times: '+ vtime_start_str + ' to ' + vtime_end_str + ')' + \
+                     ' | AnA Source: ' + verif_abbrev.loc[verif_config] + \
+                     ' | Order limit: ' + str(order_max) + \
+                     ' | Aggregate by: ' + spatial_agg_method
+                     
+    # define output directory, filename and save PNG file
+    if verif_config == 'latest_ana':
+        out_dir = out_dir / 'png' / 'LatestAnA'
+    elif verif_config == 'analysis_assim_extend':
+        out_dir = out_dir / 'png' / 'ExtAnA'   
+    else: # "analysis_assim"
+        out_dir = out_dir / 'png' / 'StdAnA'  
+        
+    if order_max == 0 and spatial_agg_method == 'str_num':
+        rof_ver = '_ROFv1'
+    elif order_max == 4 and spatial_agg_method == 'str_length':
+        rof_ver = '_ROFv2'
+    else:    
+        rof_ver = '_other'
+         
+#    fig_path = out_dir + "ROF_9panel_" + domain + rof_ver + ref_time.strftime("_%Y%m%d_%Hz") + ".png"
+    fig_path = out_dir / ("ROF_9panel_" + domain + ref_time.strftime("_%Y%m%d_%Hz") + ".png")
+                 
+    return fig_title, fig_path
     
-    # show stats only for largest object on the plot
+    
+#def nine_panel_conus(dict_map, df_stats_huc, gdf_region_hucs_eval, gdf_bounds,
+#                     ref_time, domain, event_thresh, eval_config, verif_config, col_heads, out_dir):
+                     
+def nine_panel_conus(df_stats_huc, gdf_region_hucs_eval, gdf_bounds, df_reach,
+                     event_thresh, eval_config, verif_config, fig_path, fig_title, gdf_states):
+                     
+    # show stats only for largest object/region on the plot
     max_obj = df_stats_huc['tot'].max()
     df_show_stats = df_stats_huc[df_stats_huc['tot'] == max_obj]
     gdf_max_bound = gdf_bounds.loc[df_show_stats.index]
+    
+    # TEMPORARY - column headers to read reach DF to get # ROF reaches and total stream length 'in ROF'
+    reach_col = ['','','','srf_rof','exana_rof']
+    if verif_config != 'analysis_assim_extend':
+        reach_col[4] = 'stana_rof'    
 
-    gdf = gdf_region_hucs_eval
-
+    # get xy points to show the outer boundary of selected region as a dashed line
     points=[]
     for index, row in gdf_max_bound.iterrows():
          for pt in list(row['geometry'].exterior.coords): 
@@ -2210,15 +2287,18 @@ def nine_panel_conus(dict_map, df_stats_huc, gdf_region_hucs_eval, gdf_bounds,
     # event threshold (defined in configuration definition at top)
     event_text = ' - ' + str(event_thresh) + '% Event Threshold'    
 
+    # abbreviations for plot headings and wording for title
+    # based on the eval_config and verif_config 
     abbrev = pd.Series(['srf','mrf','stana','exana'],
              index = ["short_range", "medium_range", "analysis_assim", "analysis_assim_extend"])
     
-    verif_abbrev = pd.Series(['Standard','Extended','Mixed'],
+    verif_abbrev = pd.Series(['Standard','Extended','Current Available'],
              index = ["analysis_assim", "analysis_assim_extend", "latest_ana"])
 
     eval_label = get_abbrev(eval_config).upper()
     verif_label = get_abbrev(verif_config).upper()
 
+    # set up remainder of the plot heading text
     subtitle_text = [eval_label + ' MAP (QPF)',
                      verif_label + ' MAP (QPE)',
                      'Difference (QPF-QPE)',
@@ -2229,13 +2309,7 @@ def nine_panel_conus(dict_map, df_stats_huc, gdf_region_hucs_eval, gdf_bounds,
                      verif_label + ' Exceeds ' + event_text,
                      'Contingency Matrix' + event_text]    
 
-    col_labels = ['SRF_MAP','AnA_MAP','MAP_DIFF',
-                  'SRF_pct','AnA_pct','perc_diff',
-                  'SRF_event','AnA_event','matrix']
-
-    gdf_states = gpd.read_file("C:\\repos\\git\\nwm\\shapefiles\\US_States_CONUS.shp")
-    gdf_max_bound.crs = gdf_states.crs
-
+    # define color maps for each map
     cmap_rof = mpl.cm.get_cmap('magma_r')
     cmap_map = mpl.cm.get_cmap('viridis_r')
     cmap_diff = mpl.cm.get_cmap('RdYlBu')
@@ -2245,8 +2319,22 @@ def nine_panel_conus(dict_map, df_stats_huc, gdf_region_hucs_eval, gdf_bounds,
 
     colors_bin = [(1, 1, 1), (0, 0, 0)]
     cmap_event = LinearSegmentedColormap.from_list('event_cmap', colors_bin, 2)
-
-    plim = max(100, gdf[['SRF_MAP','AnA_MAP']].max().max())
+    
+    # specify data colummns to plot and convert precip values to inches in the dataframe
+    gdf = gdf_region_hucs_eval.copy()
+    
+    col_labels = ['SRF_MAP','AnA_MAP','MAP_DIFF',
+                  'SRF_pct','AnA_pct','perc_diff',
+                  'SRF_event','AnA_event','matrix']    
+    
+    # convert mm to inches for plots
+    for col in col_labels[0:3]:
+        gdf[col] = gdf[col] / 25.4
+    
+    # define limits for colormaps/colorbars
+    # set precip max (plim) for colormap to either 100 or the max value in the data
+    # rof percent limit (rlim) is 100   
+    plim = max(4, gdf[['SRF_MAP','AnA_MAP']].max().max())
     rlim = 100
     vmins = [0, 0, -plim, 
              0, 0, -rlim, 
@@ -2257,29 +2345,58 @@ def nine_panel_conus(dict_map, df_stats_huc, gdf_region_hucs_eval, gdf_bounds,
     cmaps = [cmap_map, cmap_map, cmap_diff, 
              cmap_rof, cmap_rof, cmap_diff, 
              cmap_event, cmap_event, cmap_matrix]
+             
+    # get background map and set the 
+    #gdf_states = gpd.read_file(in_dir + "US_States_CONUS.shp")
+    #gdf_max_bound.crs = gdf_states.crs             
 
+    # set up the figure
     xlim = [-126, -66]
     ylim = [24, 52]
     figsize = (36, 20)
 
     fig, axes = plt.subplots(nrows=3, ncols=3, figsize=figsize, squeeze=0, sharex=True, sharey=True)
     plt.subplots_adjust(hspace=0.03, wspace=0.02, top=0.95)
-
+    
+    # loop through the axes, adding maps/plots
     for i, ax in enumerate(axes.flat):
 
-        basemap = gdf_states.plot(ax=ax, alpha=0.5, facecolor = 'lightgray', edgecolor='gray')
+        #basemap = gdf_states.plot(ax=ax, alpha=0.5, facecolor = 'lightgray', edgecolor='gray')
         ax.set_xlim(xlim)
-        ax.set_ylim(ylim)
-
-        gdf = gdf_region_hucs_eval
-        gdf.plot(ax=basemap, column = col_labels[i], cmap = cmaps[i], vmin = vmins[i], vmax = vmaxs[i])
+        ax.set_ylim(ylim)       
         
+        if i == 8:
+            # do not include true negatives
+            # if all are true negatives, do not plot
+            gdf_sub = gdf[gdf[col_labels[i]] < 4]
+            if len(gdf_sub) > 0:
+                gdf_sub.plot(ax=ax, column = col_labels[i], cmap = cmaps[i], vmin = vmins[i], vmax = vmaxs[i], zorder = 2)
+        elif i in [0, 1, 2]:
+            # if precip was missing, leave MAP plots blank
+            if not gdf[col_labels[i]].isnull()[0]:
+                gdf.plot(ax=ax, column = col_labels[i], cmap = cmaps[i], vmin = vmins[i], vmax = vmaxs[i], zorder = 2)
+            else:    
+                ax.text('MAP data error', np.mean(xlim), np.mean(ylim), ha = 'center')
+            
+        else:
+            gdf.plot(ax=ax, column = col_labels[i], cmap = cmaps[i], vmin = vmins[i], vmax = vmaxs[i], zorder = 2)
+        
+        # if first two rows, add colorbar
         if i < 6:
-            cbaxes = ax.inset_axes([0.9, 0.05, 0.03, 0.5])
+            cbaxes = ax.inset_axes([0.89, 0.05, 0.03, 0.5])
             cmap = mpl.cm.get_cmap(cmaps[i])
             norm = mpl.colors.Normalize(vmin=vmins[i], vmax=vmaxs[i])
-            fig.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap),
+            cb = fig.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap),
                      cax=cbaxes, orientation='vertical')
+            
+            if i < 3:
+                cb.set_label(label='inches',size = 15)
+            else:
+                cb.set_label(label='%',size = 17)
+                
+            if i in [3, 4]:
+                cb.set_ticks(np.arange(0,110,10))
+                 
         
         subtitle_x = xlim[0] + 0.5
         subtitle_y = ylim[1] - 2
@@ -2288,9 +2405,14 @@ def nine_panel_conus(dict_map, df_stats_huc, gdf_region_hucs_eval, gdf_bounds,
 
         # annotate bottom row
 
+
         # Event yes/no maps
         if i in [6,7]:
-            leg_label = ['No','Yes'] 
+        
+            nyes = gdf[gdf[col_labels[i]]].count()[0]
+            nno = gdf.shape[0] - nyes
+        
+            leg_label = ['No (' + str(nno) + ')','Yes (' + str(nyes) + ')'] 
             patch_x = subtitle_x + 1.5
             patch_y0 = ylim[0]+1.2
             text_x = patch_x + 1.5
@@ -2300,9 +2422,11 @@ def nine_panel_conus(dict_map, df_stats_huc, gdf_region_hucs_eval, gdf_bounds,
             text_y = [text_y0, text_y0 + dy]
 
             for j in range(2):
-                square = ax.scatter(patch_x, patch_y[j], color = colors_bin[j], marker='s',  edgecolor = 'black', s=300)            
-                ax.text(text_x, text_y[j], leg_label[j], fontsize = 24)
-
+                square = ax.scatter(patch_x, patch_y[j], color = colors_bin[j], marker='s',  edgecolor = 'black', s=300, zorder = 2)            
+                ax.text(text_x, text_y[j], leg_label[j], fontsize = 18)
+                
+                       
+        # contingency matrix map
         if i == 8:
             leg_label_left = ['True Pos:  ','False Pos:  ', 'False Neg:  ', 'True Neg:  ']
             leg_label_right = ['POD =  ','FAR =  ', 'CSI =  ', 'POFD =  ']  
@@ -2320,37 +2444,35 @@ def nine_panel_conus(dict_map, df_stats_huc, gdf_region_hucs_eval, gdf_bounds,
             vals_left = [str(i) for i in df_show_stats.iloc[:,1:5].values.tolist()[0]] 
             vals_right = [f'{i:.3f}' for i in df_show_stats.iloc[:,5:9].values.tolist()[0]]       
        
-            for j in range(4):
-                square = ax.scatter(patch_x, patch_y[j], color = colors_mat[j], edgecolor = 'black', marker='s', s=200)            
-                ax.text(left_text_x, text_y[j], leg_label_left[j] + vals_left[j], fontsize = 18)
+            for j in range(3):#(4):
+                square = ax.scatter(patch_x, patch_y[j+1], color = colors_mat[j], edgecolor = 'black', marker='s', s=200, zorder = 2)            
+                ax.text(left_text_x, text_y[j+1], leg_label_left[j] + vals_left[j], fontsize = 18)
             
             ax.text(right_text_x, leg_title_y,'-- Stats Region', fontsize = 18, fontweight = 'bold', ha = 'right')
             for j in range(3):
                 ax.text(right_text_x, text_y[j+1], leg_label_right[j] + vals_right[j], fontsize = 18, ha = 'right')
                 
+            # add outer boundary as dashed line around selected (largest) object
             boundline = plt.plot(x,y,'--', color='k', linewidth = 1.5)
+            
+        gdf_states.plot(ax=ax, alpha=0.5, facecolor = 'lightgray', edgecolor='gray', zorder = 1)
 
-    vtime_start_str = (ref_time + timedelta(hours=1)).strftime("%b %d %Hz")
-    vtime_end_str = (ref_time + timedelta(hours=18)).strftime("%b %d %Hz")
-    fig.suptitle('Ref Time:  ' + ref_time.strftime("%Y %b %d %Hz") + \
-                 ' (Valid Times: '+ vtime_start_str + ' - ' + vtime_end_str + ')' + \
-                 '    AnA Source:  ' + verif_abbrev.loc[verif_config], 
-                 fontsize=30, y = 0.98)
+    # set up text for overall figure heading
+#    vtime_start_str = (ref_time + timedelta(hours=1)).strftime("%b %d %Hz")
+#    vtime_end_str = (ref_time + timedelta(hours=18)).strftime("%b %d %Hz")
+#    fig.suptitle('Ref Time:  ' + ref_time.strftime("%Y %b %d %Hz") + \
+#                 ' (Valid Times: '+ vtime_start_str + ' - ' + vtime_end_str + ')' + \
+#                 '  AnA Source:  ' + verif_abbrev.loc[verif_config] + 
+#                 '  Str order lim: ', 
+    fig.suptitle(fig_title, fontsize=20, y = 0.98)   
 
-    if verif_config == "latest_ana":
-        out_dir = out_dir + "png\\LatestAnA\\"
-    elif verif_config == "analysis_assim_extend":
-         out_dir = out_dir + "png\\ExtAnA\\"   
-    else: # "analysis_assim"
-         out_dir = out_dir + "png\\StdAnA\\"   
-
-    fig_filename = out_dir + "ROF_9panel_" + domain + ref_time.strftime("_%Y%m%d_%Hz") + ".png"
-    print('writing PNG file: ', fig_filename)
-    plt.savefig(fig_filename, dpi=150, bbox_inches = "tight")
+#    fig_filename = out_dir + "ROF_9panel_" + domain + ref_time.strftime("_%Y%m%d_%Hz") + ".png"
+    print('writing PNG file: ', fig_path)
+    plt.savefig(fig_path, dpi=150, bbox_inches = "tight")
     
     
     
-def region_shapefile(dict_map, df_huc_eval, df_stats_huc, gdf_huc10_dd,
+def region_shapefile(dict_map, df_huc_eval, gdf_huc10_dd,
                      eval_config, verif_config, col_heads):
     
                     
@@ -2365,7 +2487,7 @@ def region_shapefile(dict_map, df_huc_eval, df_stats_huc, gdf_huc10_dd,
     gdf_dd = gdf_huc10_dd     
                 
     for i in range(len(col_labels)):
-
+ 
         if i == 0:
             df = dict_map[eval_config]
         elif i == 1:
@@ -2373,7 +2495,10 @@ def region_shapefile(dict_map, df_huc_eval, df_stats_huc, gdf_huc10_dd,
         elif i == 2:
             df = dict_map[eval_config] - dict_map[verif_config]
         if i in [3, 4, 5, 6, 7, 8]:
-            df = df_huc_eval
+            df = df_huc_eval            
+            
+        # losing the index header somewhere
+        df.index = df.index.rename('HUC10')
 
         gdf_dd = gdf_dd.merge(df[col_labels[i]], on = 'HUC10', how = "inner")
         gdf_dd = gdf_dd.rename(columns = {col_labels[i] : rename_labels[i]}) 
@@ -2383,21 +2508,21 @@ def region_shapefile(dict_map, df_huc_eval, df_stats_huc, gdf_huc10_dd,
     return gdf_dd #, gdf_prj
 
 
-def write_output(ref_time, out_dir, domain, verif_config, gdf_dd, df_gages, gdf_bounds):
+def write_output(ref_time, out_dir, domain, gdf_dd, df_gages, gdf_bounds):
 
     ref_str = ref_time.strftime("%Y%m%d_t%H")
     
     # shapefiles - all HUC10s
-    shpfile_dd = out_dir + 'shp\\region_hucs_' + ref_str + "_" + domain + "_dd.shp"
+    shpfile_dd = out_dir / 'shp' / ('region_hucs_' + ref_str + '_' + domain + '_dd.shp')
     gdf_dd.to_file(shpfile_dd)    
     
     # shapefiles - region boundary
-    shpfile_bounds_dd = out_dir + 'shp\\region_bounds_' + ref_str + "_" + domain + "_dd.shp"
+    shpfile_bounds_dd = out_dir / 'shp' / ('region_bounds_' + ref_str + '_' + domain + '_dd.shp')
     gdf_bounds = gdf_bounds.set_crs(epsg=4269)
     gdf_bounds.to_file(shpfile_bounds_dd)
 
     # list of gages in region of interest
-    gagelist_fname = out_dir + 'csv\\region_gagelist_' + ref_str + "_" + domain + ".csv"
+    gagelist_fname = out_dir / 'csv' / ('region_gagelist_' + ref_str + '_' + domain + '.csv')
     df_gages_region = df_gages.loc[df_gages['HUC10'].isin(gdf_dd['HUC10']),:].copy()
     df_gages_region['feature_id'] = df_gages_region.index
     df_gages_region = df_gages_region.set_index('gage')
@@ -2405,4 +2530,30 @@ def write_output(ref_time, out_dir, domain, verif_config, gdf_dd, df_gages, gdf_
     df_gages_region.to_csv(gagelist_fname)
     
     return df_gages_region
+    
+def empty_fig(fig_path, fig_title, gdf_states):
+      
+    # set up the figure
+    xlim = [-126, -66]
+    ylim = [24, 52]
+    figsize = (36, 20)
+
+    fig, axes = plt.subplots(nrows=3, ncols=3, figsize=figsize, squeeze=0, sharex=True, sharey=True)
+    plt.subplots_adjust(hspace=0.03, wspace=0.02, top=0.95)
+    
+    # loop through the axes, adding maps/plots
+    for i, ax in enumerate(axes.flat):
+
+        #basemap = gdf_states.plot(ax=ax, alpha=0.5, facecolor = 'lightgray', edgecolor='gray')
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)      
+        
+        gdf_states.plot(ax=ax, alpha=0.5, facecolor = 'lightgray', edgecolor='gray', zorder = 1)         
+         
+        ax.text(np.mean(xlim), np.mean(ylim), 'No HUCs meet ROF criteria', ha = 'center', fontsize = 16)
+
+    fig.suptitle(fig_title, fontsize=20, y = 0.98)   
+
+    print('writing PNG file: ', fig_path)
+    plt.savefig(fig_path, dpi=150, bbox_inches = "tight")
     

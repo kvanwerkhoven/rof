@@ -62,6 +62,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         ref_time_list, version_list = reftimes(domain, eval_config, verif_config, eval_timing,
                                                start = start_time, end = end_time)
 
+    print(domain)
     
     #  Get filelists (alter to parse out specs as needed for DSTOR or WRDS)
     ###############################################################################################

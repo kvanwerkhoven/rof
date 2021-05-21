@@ -6,6 +6,7 @@ Code by Katie van Werkhoven, ISED
 
 from datetime import datetime, timedelta
 import importlib
+from pathlib import Path
 
 # import functions created for this evaluation
 # force reload of nwm to ensure latest version (needed during testing when still making edits to the functions)
@@ -25,11 +26,11 @@ domain = 'conus'
 # currently does not work for a range that spans the version change
 
 # local nwm netcdf storage (grids and channel), currently an external drive
-nwm_repo = 'E:\\NWM_Cache'
+nwm_repo = Path('E:/NWM_Cache')
     
 # input/output directories
-in_dir = 'C:\\repos\\git\\nwm\\input\\'
-out_dir = 'C:\\repos\\git\\nwm\\output\\'
+in_dir = Path('C:/repos/git/nwm/input')
+out_dir = Path('C:/repos/git/nwm/output')
 
 ###############################################################################################
 #  Evaluation specs - configuration used, type of eval, timing of eval
@@ -58,8 +59,8 @@ eval_timing = "current"
 
 # date range for timing method "past", for other timing methods these dates are ignored
 
-start_time = datetime(2021, 3, 27, 14, 0, 0)
-end_time = datetime(2021, 3, 27, 14, 0, 0)
+start_time = datetime(2021, 5, 6, 5, 0, 0)
+end_time = datetime(2021, 5, 6, 5, 0, 0)
 
 # Evaluation metric
 metric = 'rof'
@@ -68,13 +69,20 @@ metric = 'rof'
 spatial_agg_method = "str_length"
 
 # Stream order limit, if any - upper limit on order of streams to include in evaluation (0 if none)
-order_max = 5 
+order_max = 4 
 
 # event threshold for defined metric and spatial agg method (e.g. 30% of reaches in ROF)
 event_thresh = 30
+
+# method of MAP calculation in zonal_stats: all_touched = True or False
+all_touched = False
+
+# use existing MAP values previously calculated if they exist
+use_existing = True
 
 # Execute evaluation
 nwm.rof_eval_with_download(domain, nwm_repo, in_dir, out_dir, 
                            eval_config, verif_config, eval_timing,
                            metric, spatial_agg_method, event_thresh, order_max,
+                           use_existing = use_existing, all_touched = all_touched,
                            start = start_time, end = end_time)

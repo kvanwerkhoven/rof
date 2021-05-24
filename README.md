@@ -1,2 +1,2 @@
-# rti-nwc
-A collection of hydrologic model/forecast evaluation processing and visualization prototype routines developed by RTI to support OWP-NWC.   All code is experimental and provided for evaluation testing/design purposes only. Will require modification to work within OWP systems for data access, etc.
+# ROF Evaluation
+A collection of hydrologic model/forecast evaluation processing and visualization prototype routines for evaluating the rapid onset flooding forecast used operationally by OWP-WPOD.

@@ -1,0 +1,11 @@
+version: "3.7"
+
+services:
+  rof:
+    image: rof
+    restart: always
+    working_dir: /src/ROF
+    entrypoint: "python rof_config.py"
+    volumes:
+      - <somewhere-local>/data:/data
+      - <somewhere-local>/output:/rof_maps

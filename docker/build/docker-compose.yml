@@ -1,0 +1,8 @@
+version: "3.7"
+
+services:
+  rof:
+    image: rof
+    build:
+      context: ../../
+      dockerfile: ./docker/Dockerfile

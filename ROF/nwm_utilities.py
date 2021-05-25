@@ -880,16 +880,14 @@ def download_nwm_from_google(version_dir, filelist):
         encoded_nwm_path = datedir + slash + config_dir + slash + filename    
 
         # check if datedir exists
-        if not (version_dir / datedir).exists():
-            (version_dir / datedir).mkdir()
+        create_dir_if_not_exist(version_dir / datedir)
 
         # build netcdf_dir
         #netcdf_dir = os.path.join(version_dir, datedir, config_dir)
         netcdf_dir = version_dir / nwm_path.parent
 
         # check if output directory exists, if not create
-        if not netcdf_dir.exists():   
-            netcdf_dir.mkdir()
+        create_dir_if_not_exist(netcdf_dir)
 
         # build full output path
         full_path = netcdf_dir / filename        
@@ -2037,9 +2035,8 @@ def build_mapout_dir(base_dir, ref_time, config, suffix):
     mapout_dir = base_dir / datedir / (config_dir + "_" + suffix)
 
     # check if output directory exists, if not create
-    if not mapout_dir.exists():   
-        mapout_dir.mkdir()
-        
+    create_dir_if_not_exist(mapout_dir)
+
     return mapout_dir
     
 
@@ -2245,6 +2242,9 @@ def rof_fig_text(version, domain, verif_config, ref_time, out_dir, order_max, sp
         out_dir = out_dir / 'png' / 'ExtAnA'   
     else: # "analysis_assim"
         out_dir = out_dir / 'png' / 'StdAnA'  
+
+    # create output dir if it doesnt exist
+    create_dir_if_not_exist(out_dir)
         
     if order_max == 0 and spatial_agg_method == 'str_num':
         rof_ver = '_ROFv1'
@@ -2511,18 +2511,26 @@ def region_shapefile(dict_map, df_huc_eval, gdf_huc10_dd,
 def write_output(ref_time, out_dir, domain, gdf_dd, df_gages, gdf_bounds):
 
     ref_str = ref_time.strftime("%Y%m%d_t%H")
+
+    # Instantiate output dirs
+    shp_out_dir = out_dir / "shp"
+    csv_out_dir = out_dir / "csv"
+
+    # Create output dirs if they do not exist
+    create_dir_if_not_exist(shp_out_dir)
+    create_dir_if_not_exist(csv_out_dir)
     
     # shapefiles - all HUC10s
-    shpfile_dd = out_dir / 'shp' / ('region_hucs_' + ref_str + '_' + domain + '_dd.shp')
+    shpfile_dd = shp_out_dir / ('region_hucs_' + ref_str + '_' + domain + '_dd.shp')
     gdf_dd.to_file(shpfile_dd)    
     
     # shapefiles - region boundary
-    shpfile_bounds_dd = out_dir / 'shp' / ('region_bounds_' + ref_str + '_' + domain + '_dd.shp')
+    shpfile_bounds_dd = shp_out_dir / ('region_bounds_' + ref_str + '_' + domain + '_dd.shp')
     gdf_bounds = gdf_bounds.set_crs(epsg=4269)
     gdf_bounds.to_file(shpfile_bounds_dd)
 
     # list of gages in region of interest
-    gagelist_fname = out_dir / 'csv' / ('region_gagelist_' + ref_str + '_' + domain + '.csv')
+    gagelist_fname = csv_out_dir / ('region_gagelist_' + ref_str + '_' + domain + '.csv')
     df_gages_region = df_gages.loc[df_gages['HUC10'].isin(gdf_dd['HUC10']),:].copy()
     df_gages_region['feature_id'] = df_gages_region.index
     df_gages_region = df_gages_region.set_index('gage')
@@ -2557,3 +2565,7 @@ def empty_fig(fig_path, fig_title, gdf_states):
     print('writing PNG file: ', fig_path)
     plt.savefig(fig_path, dpi=150, bbox_inches = "tight")
     
+def create_dir_if_not_exist(p: Path):
+    if not p.exists():
+        print(f"Directory {p} does not exist. Creating {p}")
+        p.mkdir(parents=True, exist_ok=True)

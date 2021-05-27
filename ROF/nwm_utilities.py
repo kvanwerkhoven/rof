@@ -143,12 +143,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
     df_filelists_channel = df_filelists[df_filelists['variable'] == 'channel']
     df_filelists_forcing = df_filelists[df_filelists['variable'] == 'forcing']
     dict_metrics = {}
-    dict_map = {}
-    
-    # check that all channel_rt output files needed already existing or were successfully downloaded
-    # if any channel_rt output is missing - raise exception, exit program
-    # if forcing grids are missing, allow ROF calculations to continue, MAP plots will be left blank
-    file_check(df_filelists_channel)    
+    dict_map = {} 
 
     t_eval_start = time.time() 
 
@@ -166,6 +161,17 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
         ##############################################################################
         
         t_read_start = time.time()
+        
+        print("\nChecking that all needed files exist for this reference time: ", ref_time)
+        # check that all channel_rt output files needed already existing or were successfully downloaded
+        # if any channel_rt output is missing - skip this reftime
+        # if forcing grids are missing, allow ROF calculations to continue, MAP plots will be left blank   
+        df_filelists_reftime = df_filelists_channel.loc[(df_filelists_channel['ref_time'] == ref_time)]                                               
+        all_files_exist = check_files_exist(df_filelists_reftime)
+        
+        if not all_files_exist:
+            print('     !!! NWM files are missing, skipping reference time: ', ref_time)
+            continue  
         
         print("\nReading nwm output for reference time: ", ref_time)
         
@@ -949,13 +955,16 @@ def get_from_google(encoded_nwm_path, full_path):
     
     return status
     
-def file_check(df_filelists_channel):
+def check_files_exist(df_filelists_reftime):
 
-    # check that all files needed for the evaluation already existing or were successfully downloaded
-    # if any channel_rt output is missing - raise exception, exit program
+    # check that all files needed for the evaluation for the current reftime already existed
+    #    or were successfully downloaded
+    # if any channel_rt output is missing - set flag to False which will skip the reftime
     # if grids are missing, allow ROF calculations to continue 
     
-    for index, row in df_filelists_channel.iterrows():
+    all_files_exist = True
+    
+    for index, row in df_filelists_reftime.iterrows():
 
         filelist = row['filelist']
         in_cache = row['in_cache']
@@ -963,8 +972,9 @@ def file_check(df_filelists_channel):
         for i, file in enumerate(filelist):
             
             if not in_cache[i]:
-                raise OSError(f"NWM channel output file missing, cannot proceed, check download source: {file}")
-
+                all_files_exist = False
+    
+    return all_files_exist
     
 def read_feature_info(domain, version, in_dir):
 

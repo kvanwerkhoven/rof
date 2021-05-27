@@ -1040,7 +1040,7 @@ def build_flow_array(filelist, version_dir, feat_list, is_forecast):
     df_flow = pd.DataFrame()
     df_nudge = pd.DataFrame()
     
-    inds = False
+    index_good = False
     
     for ts, nwm_file in enumerate(filelist):
 
@@ -1056,7 +1056,7 @@ def build_flow_array(filelist, version_dir, feat_list, is_forecast):
             # if first timestep, get list of indexes (feature ids) to confirm subsequent indexes 
             # are in the same order. (stored in nwm output files in same order) 
             # Only reindex if needed - creates big slow down.
-            if not inds or ts == 0:
+            if not index_good or ts == 0:
                 inds = ts_flow.index 
                 index_good = True
             else:

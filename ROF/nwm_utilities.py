@@ -2645,3 +2645,4 @@ def fig_colors(gdf):
         norms.append(norm)
                 
     return cmaps, cmaps_cb, norms, bounds
+

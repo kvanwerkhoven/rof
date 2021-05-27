@@ -21,8 +21,9 @@ from shapely.geometry import Point
 import math
 import shapely.geometry as geometry
 import matplotlib as mpl
+from matplotlib import cm
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from pathlib import Path
 
@@ -54,9 +55,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
                 elif key == 'end':
                     end_time = value
                 else:
-                    sys.exit('Error: incorrect keyword', key)
-        else:
-            sys.exit('Date range not specified')
+                    raise KeyError(f"Error: incorrect keyword {key}")
             
         ref_time_list, version_list = reftimes(domain, eval_config, verif_config, eval_timing,
                                                start = start_time, end = end_time)
@@ -72,57 +71,66 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
     # store filelists for later calculation steps
     df_filelists = pd.DataFrame()
 
+    ind = 0
     for i, ref_time in enumerate(ref_time_list):
-    
-        print ("-------------Ref_time:", ref_time,"-------------")
-        
+
         version = version_list[i]
-        
+
         if version == 2.1:
             version_dir = nwm_repo / 'v2_1'
         else:
             version_dir = nwm_repo / 'v2_0'
-        
+
         for config in config_list:
             for variable in var_list:
                 print ("Building file list for:", ref_time, config, variable)
-                
+
                 filelist = build_filelist(ref_time, 
-                                          version, 
-                                          domain, 
-                                          variable, 
-                                          config, 
-                                          eval_config, 
-                                          verif_config)
-                
+                                              version, 
+                                              domain, 
+                                              variable, 
+                                              config, 
+                                              eval_config, 
+                                              verif_config)
+
                 # append the list to dataframe
                 df_filelists = df_filelists.append(pd.DataFrame({'ref_time' : ref_time,
                                                                  'config' : config, 
                                                                  'variable' : variable, 
-                                                                 'filelist' : [filelist]}))
-            
-
+                                                                 'filelist' : [filelist]}, 
+                                                                  index = [ind]))
+                ind += 1
+                
     ###############################################################################################
     #  Download netcdf files needed for the evaluation (skip if data already on local source)
     ###############################################################################################
 
     t_download_start = time.time()   
 
+    # store file status (in cache or failed) for check post-download function
+    # do not exit program mid-download due to a missing file in order to continue download of any available files  
+    df_in_cache = pd.DataFrame()
+
     for index, row in df_filelists.iterrows():
-        
+
         print("\nDownloading nwm output from Google for: ", row['variable'], row['config'], row['ref_time'])
         file_in_cache = download_nwm_from_google(version_dir, row['filelist'])
-                
+
+        df_in_cache = df_in_cache.append(pd.DataFrame({'in_cache' : [file_in_cache]}, 
+                                                        index = [index]))
+
     t_download_end = time.time()
     print("\n---Download complete - Total download time", (t_download_end - t_download_start)/60, " min.")
-        
-        
+
+    df_filelists = df_filelists.join(df_in_cache)
+
+
     ###############################################################################################
     #  Begin reference time loop 
     ###############################################################################################
 
     print("\nReading static huc10 and feature information for domain: ", domain)
-
+    
     # get static feature and huc10 info 
     df_featinfo, df_gages, df_thresh, df_length = read_feature_info(domain, 
                                                                     version,
@@ -136,6 +144,11 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
     df_filelists_forcing = df_filelists[df_filelists['variable'] == 'forcing']
     dict_metrics = {}
     dict_map = {}
+    
+    # check that all channel_rt output files needed already existing or were successfully downloaded
+    # if any channel_rt output is missing - raise exception, exit program
+    # if forcing grids are missing, allow ROF calculations to continue, MAP plots will be left blank
+    file_check(df_filelists_channel)    
 
     t_eval_start = time.time() 
 
@@ -162,15 +175,18 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
             print("\nBuilding flow arrays for config: ", config)
 
             filelist = df_filelists_channel.loc[(df_filelists_channel['ref_time'] == ref_time) & 
-                                                (df_filelists_channel['config'] == config), 'filelist'][0]
+                                                (df_filelists_channel['config'] == config), 'filelist'].iloc[0]
 
             # build dataframe of flow and nudge arrays by reach, timesteps T0 to TN (if forecast, nudge will be empty)
             df_flow, df_nudge, success = build_flow_array(filelist, 
                                                           version_dir, 
                                                           feat_list = [], 
                                                           is_forecast = True)
+            
+            # TEMPORARY pending further testing
+            # if any files missing, it should be caught ealier in 'file_check', left until further tested
             if not success:
-                sys.exit('NWM output not found, ROF calculations failed')
+                raise FileNotFoundError('NWM output missing, ROF calculations failed')
             
             # build dataframe of flow metrics by reach (including ROF criteria, BAT, others)
             df_metrics, df_flow_sub = get_flow_metrics(df_flow, 
@@ -283,7 +299,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
             print("\nCalculating mean areal precip for config: ", config, ", reference time: ", ref_time)
 
             filelist = df_filelists_forcing.loc[(df_filelists_forcing['ref_time'] == ref_time) & 
-                                                (df_filelists_forcing['config'] == config),'filelist'][0]
+                                                (df_filelists_forcing['config'] == config),'filelist'].iloc[0]
             
             # get map timeseries for timesteps 1-18 for the hucs within the region,
             # (do not include timestep 0 from the filelist)
@@ -324,8 +340,7 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
                                                 col_heads)    
         
         fig_title, fig_path = rof_fig_text(version, domain, verif_config, ref_time, out_dir, order_max, spatial_agg_method)
-        
-        
+         
         nine_panel_conus(df_stats_huc, 
                         gdf_region_hucs_eval,
                         gdf_bounds,
@@ -336,7 +351,6 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
                         fig_path,
                         fig_title,
                         gdf_states)
-        
         
         # write output for this reference time
         # shapefile containing eval results
@@ -374,16 +388,16 @@ def reftimes(domain, eval_config, verif_config, eval_timing, **kwargs):
                 elif key == 'end':
                     end_reftime = value
                 else:
-                    sys.exit('Error: incorrect keyword', key)
+                    raise KeyError(f"Error: incorrect keyword {key}")
         else:
-            sys.exit('Error: must define start/end times for "past" type evaluation')
+            raise KeyError("Error: No start/end times defined for 'past' type evaluation")
                     
                     
         version = nwm_version(start_reftime)
         version_end = nwm_version(end_reftime)
     
         if version != version_end:
-            sys.exit('Error: date range spans different NWM versions - not yet supported')
+            raise ValueError('Date range spans different NWM versions - not yet supported')
          
     # get some needed specs for the eval_config
     df_config = config_specs(eval_config, domain, version)
@@ -434,7 +448,7 @@ def reftimes(domain, eval_config, verif_config, eval_timing, **kwargs):
     # if ref_time_list returns empty - no forecasts were run on the specified reference time
     # e.g. Hawaii runs only every 6 hours (v2.0)
     if not ref_time_list:
-        sys.exit('No short_range reference times are available to evaluate for datetime: ', eval_reftime)
+        raise ValueError(f"No short_range reference times are available to evaluate for datetime: {eval_reftime}")
     else:
         if eval_timing == 'past':
             print('Evaluation reference times: ', start_reftime, ' through ',end_reftime)
@@ -472,13 +486,13 @@ def build_reftime_list(start_reftime, end_reftime, domain, version, eval_config,
     
     # first do some checks
     if end_reftime < start_reftime:
-        sys.exit('Error:  Start date after end date')
+        raise ValueError('Start date after end date')
         
     if domain == 'hawaii' and eval_config == 'medium_range':
-        sys.exit('Error:  Domain and configuration not compatible') 
+        raise ValueError('Domain and configuration not compatible') 
         
     if version < 2.0 or version > 2.1:
-        sys.exit('Error:  Version must be 2.0 or 2.1')
+        raise ValueError('Version must be 2.0 or 2.1')
 
     # the reference time interval
     # *Note currently in all cases the NWM always runs at fixed intervals beginning at 00z
@@ -684,7 +698,6 @@ def build_filelist(ref_time, version, domain, variable, config, eval_config, ver
         # add the full path to the list
         
         filelist.append(Path(row['datedir']) / config_dir / filename)
-        #filelist.append(os.path.join(row['datedir'], config_dir, filename))
  
     return filelist
     
@@ -871,9 +884,9 @@ def download_nwm_from_google(version_dir, filelist):
     for i, nwm_path in enumerate(filelist):
            
         # parse out nwm directories and filename from full_path
-        datedir = nwm_path.parts[0] #split("\\")[0]
-        config_dir = nwm_path.parts[1] #.split("\\")[1]
-        filename = nwm_path.parts[2] #.split("\\")[2]
+        datedir = nwm_path.parts[0]
+        config_dir = nwm_path.parts[1]
+        filename = nwm_path.parts[2]
         
         # rebuild with UTF-8 encoding for directory slash   
         slash = "%2F"
@@ -883,7 +896,6 @@ def download_nwm_from_google(version_dir, filelist):
         create_dir_if_not_exist(version_dir / datedir)
 
         # build netcdf_dir
-        #netcdf_dir = os.path.join(version_dir, datedir, config_dir)
         netcdf_dir = version_dir / nwm_path.parent
 
         # check if output directory exists, if not create
@@ -928,8 +940,6 @@ def get_from_google(encoded_nwm_path, full_path):
     
     if response.status_code == 200:
         print("writing file to: ", full_path)
-        #with open(full_path, "wb") as f:
-        #    f.write(response.content)
         with full_path.open("wb") as f:
             f.write(response.content)
         status = 'downloaded'
@@ -939,6 +949,22 @@ def get_from_google(encoded_nwm_path, full_path):
     
     return status
     
+def file_check(df_filelists_channel):
+
+    # check that all files needed for the evaluation already existing or were successfully downloaded
+    # if any channel_rt output is missing - raise exception, exit program
+    # if grids are missing, allow ROF calculations to continue 
+    
+    for index, row in df_filelists_channel.iterrows():
+
+        filelist = row['filelist']
+        in_cache = row['in_cache']
+    
+        for i, file in enumerate(filelist):
+            
+            if not in_cache[i]:
+                raise OSError(f"NWM channel output file missing, cannot proceed, check download source: {file}")
+
     
 def read_feature_info(domain, version, in_dir):
 
@@ -987,7 +1013,6 @@ def read_huc10_info(domain, in_dir):
     df_hucinfo = df_hucinfo.rename(columns = {"Centroid_Lat" : "lat", 
                                               "Centroid_Lon" : "lon"})
                                                 
-    
     # read shapefiles - need projected for MAP processing and dd for graphics/maps
     gdf_huc_dd = gpd.read_file(in_dir / huc_shp_dd)
     gdf_huc_dd["HUC10"] = gdf_huc_dd["HUC10"].astype("int64")
@@ -998,11 +1023,8 @@ def read_huc10_info(domain, in_dir):
     
     # add polygon centroids to geodataframe
     gdf_huc_dd = gdf_huc_dd.merge(df_hucinfo[['lat','lon']], how = 'left', left_on = 'HUC10', right_index = True)
-    
-    # project dd to nwm grid projection
-    #gdf_huc_prj, is_proj = shp_to_crs(gdf_huc_dd, domain)   
       
-    return df_hucinfo, gdf_huc_dd, gdf_states #, gdf_huc_prj
+    return df_hucinfo, gdf_huc_dd, gdf_states
 
 ######################################################################################
 # data processing - read/process flow data
@@ -1018,6 +1040,8 @@ def build_flow_array(filelist, version_dir, feat_list, is_forecast):
     df_flow = pd.DataFrame()
     df_nudge = pd.DataFrame()
     
+    inds = False
+    
     for ts, nwm_file in enumerate(filelist):
 
         print('Reading', str(nwm_file))
@@ -1032,7 +1056,7 @@ def build_flow_array(filelist, version_dir, feat_list, is_forecast):
             # if first timestep, get list of indexes (feature ids) to confirm subsequent indexes 
             # are in the same order. (stored in nwm output files in same order) 
             # Only reindex if needed - creates big slow down.
-            if ts == 0:
+            if not inds or ts == 0:
                 inds = ts_flow.index 
                 index_good = True
             else:
@@ -1047,7 +1071,8 @@ def build_flow_array(filelist, version_dir, feat_list, is_forecast):
                 df_nudge[ts] = ts_nudge[inds]
 
         else:
-            print('file read failed: ', str(nwm_file))         
+            #print('file read failed: ', str(nwm_file))
+            raise OSError(f"NWM file not found {nwm_file}")            
             
     return df_flow, df_nudge, success
         
@@ -1078,7 +1103,9 @@ def get_flow_from_path(version_dir, path, feat_list, is_forecast):
         
     else:
         success = False
-        print('file read failed: ', str(path))
+        #print('file read failed: ', str(path))
+        raise OSError(f"NWM file not found {path}")
+        
         flow = []
         nudge = []
         
@@ -1385,7 +1412,6 @@ def sum_huc10_metrics(df_hucinfo, df_reach, configs, metric, order_max = 4):
     # (less than order max, defined HUC10, non-missing stat value)
     df_strlen = df_reach[['HUC10','length_m']].groupby('HUC10').sum()
     df_strlen = df_strlen.rename(columns = {'length_m' : 'tot_strlen'})
-#    df_hucinfo_sub = df_strlen.join(df_hucinfo, how = 'outer').fillna(value = 0)
     df_hucinfo_sub = df_strlen.join(df_hucinfo, how = 'left').fillna(value = 0)
 
     # the data is boolean type, sum values by HUC10 to count num of reaches (True = 1)
@@ -1404,7 +1430,7 @@ def sum_huc10_metrics(df_hucinfo, df_reach, configs, metric, order_max = 4):
         df_huc = df_reach[['HUC10',ecol, vcol]].groupby('HUC10').mean()
     
     else:
-        sys.exit('Cannot summarize data by HUC10 for data type', data_type)
+        raise TypeError('Cannot summarize data by HUC10 for data type', data_type)
         
     return df_huc
     
@@ -1455,7 +1481,7 @@ def eval_stats_reach(df_reach, configs, metric, comp_method = 'matrix'):
     
         #confirm data type is already boolean
         if df_reach[cols[0]].dtype != 'bool':
-            sys.exit('data type must already be boolean for matrix method')
+            raise TypeError('data type must already be boolean for matrix method')
             
         for obj in objects:
             
@@ -1507,8 +1533,6 @@ def eval_stats_huc(df_huc, configs, metric,
     else:
         suffix = 'pernum'
         
-    
-    
     # generate column headers to read huc metrics dataframe, add suffix if app.
     cols_read = get_column_headers(configs, metric, suffix = suffix)
     
@@ -2074,7 +2098,6 @@ def get_map_path(mapout_dir, ref_time, config, nwm_path, shp_tag, ref_tag):
     return path, file_exists
 
 
-#def map_by_filelist(version_dir, filelist, shp_file, polyids, shp_header):
 def map_by_filelist(version_dir, filelist, calc_poly, all_touched):#, shp_header):
 
     df_map = pd.DataFrame()   
@@ -2102,11 +2125,11 @@ def map_by_filelist(version_dir, filelist, calc_poly, all_touched):#, shp_header
             df_zstats = get_grid_stats(grid_path, calc_poly, all_touched)#, shp_header)
 
             # if failed for some reason, e.g. netcdf file is corrupt, fill with NaN
+            # but allow process to proceed (MAP plots will be empty)
             if df_zstats.empty:
                 print('\n !! GRID PROCESSING FAILED FOR : ', str(nwm_path))
                 
                 df_zstats = pd.DataFrame({'mean' : np.full(npoly,np.nan)}, index = polyids)
-                #sys.exit('grid processing failed - cannot calculate MAP')
             
             # convert from mm s-1 to mm hr-1
             df_zstats["mean"] = df_zstats["mean"] * 60 * 60  
@@ -2186,7 +2209,6 @@ def affine_from_latlon(lat, lon):
     return trans * scale
 
 
-#def get_grid_stats(grid_path, shp_file, polyids, shp_header):
 def get_grid_stats(grid_path, calc_poly, all_touched):#, shp_header):
 
     try:
@@ -2208,15 +2230,10 @@ def get_grid_stats(grid_path, calc_poly, all_touched):#, shp_header):
     scale = Affine.scale(lon[1] - lon[0], lat_flip[1] - lat_flip[0])    
     transform = trans * scale
 
-    #zstats = zonal_stats(shp_file, rain_flip, affine=transform, nodata = -999, stats="count mean")
     zstats = zonal_stats(vectors = calc_poly['geometry'], raster = rain_flip, affine=transform, 
                          nodata = -999, stats="count mean", all_touched = all_touched)
 
     df_zstats = pd.DataFrame(zstats, index = calc_poly.index)
-    #df_zstats[shp_header] = calc_poly.index #polyids 
-    #df_zstats = df_zstats.set_index(shp_header)
-
-    #gdf_zstats = gdf_hucs.merge(df_zstats, on = 'HUC10')
 
     return df_zstats
     
@@ -2253,14 +2270,10 @@ def rof_fig_text(version, domain, verif_config, ref_time, out_dir, order_max, sp
     else:    
         rof_ver = '_other'
          
-#    fig_path = out_dir + "ROF_9panel_" + domain + rof_ver + ref_time.strftime("_%Y%m%d_%Hz") + ".png"
     fig_path = out_dir / ("ROF_9panel_" + domain + ref_time.strftime("_%Y%m%d_%Hz") + ".png")
                  
     return fig_title, fig_path
-    
-    
-#def nine_panel_conus(dict_map, df_stats_huc, gdf_region_hucs_eval, gdf_bounds,
-#                     ref_time, domain, event_thresh, eval_config, verif_config, col_heads, out_dir):
+
                      
 def nine_panel_conus(df_stats_huc, gdf_region_hucs_eval, gdf_bounds, df_reach,
                      event_thresh, eval_config, verif_config, fig_path, fig_title, gdf_states):
@@ -2269,21 +2282,15 @@ def nine_panel_conus(df_stats_huc, gdf_region_hucs_eval, gdf_bounds, df_reach,
     max_obj = df_stats_huc['tot'].max()
     df_show_stats = df_stats_huc[df_stats_huc['tot'] == max_obj]
     gdf_max_bound = gdf_bounds.loc[df_show_stats.index]
-    
+    gdf_rest_bound = gdf_bounds[~gdf_bounds.index.isin(df_show_stats.index)]
+
     # TEMPORARY - column headers to read reach DF to get # ROF reaches and total stream length 'in ROF'
     reach_col = ['','','','srf_rof','exana_rof']
     if verif_config != 'analysis_assim_extend':
         reach_col[4] = 'stana_rof'    
-
-    # get xy points to show the outer boundary of selected region as a dashed line
-    points=[]
-    for index, row in gdf_max_bound.iterrows():
-         for pt in list(row['geometry'].exterior.coords): 
-            #print(index)
-            points.append(Point(pt))
-    x = [p.coords.xy[0] for p in points]
-    y = [p.coords.xy[1] for p in points]
-
+    
+    ######################### Set-up labels and text ##############################
+    
     # event threshold (defined in configuration definition at top)
     event_text = ' - ' + str(event_thresh) + '% Event Threshold'    
 
@@ -2309,17 +2316,6 @@ def nine_panel_conus(df_stats_huc, gdf_region_hucs_eval, gdf_bounds, df_reach,
                      verif_label + ' Exceeds ' + event_text,
                      'Contingency Matrix' + event_text]    
 
-    # define color maps for each map
-    cmap_rof = mpl.cm.get_cmap('magma_r')
-    cmap_map = mpl.cm.get_cmap('viridis_r')
-    cmap_diff = mpl.cm.get_cmap('RdYlBu')
-
-    colors_mat = [(0, 1, 0), (1, 1, 0), (1, 0, 0), (.7, .7, .7)]
-    cmap_matrix = LinearSegmentedColormap.from_list('matrix_cmap', colors_mat, 4)
-
-    colors_bin = [(1, 1, 1), (0, 0, 0)]
-    cmap_event = LinearSegmentedColormap.from_list('event_cmap', colors_bin, 2)
-    
     # specify data colummns to plot and convert precip values to inches in the dataframe
     gdf = gdf_region_hucs_eval.copy()
     
@@ -2330,30 +2326,15 @@ def nine_panel_conus(df_stats_huc, gdf_region_hucs_eval, gdf_bounds, df_reach,
     # convert mm to inches for plots
     for col in col_labels[0:3]:
         gdf[col] = gdf[col] / 25.4
+        
+    cmaps, cmaps_cb, norms, bounds = fig_colors(gdf) 
+         
+    ################################### set up the figure ###############################
     
-    # define limits for colormaps/colorbars
-    # set precip max (plim) for colormap to either 100 or the max value in the data
-    # rof percent limit (rlim) is 100   
-    plim = max(4, gdf[['SRF_MAP','AnA_MAP']].max().max())
-    rlim = 100
-    vmins = [0, 0, -plim, 
-             0, 0, -rlim, 
-             0, 0, 1]
-    vmaxs = [plim, plim, plim,
-             rlim, rlim, rlim, 
-             1, 1, 4]
-    cmaps = [cmap_map, cmap_map, cmap_diff, 
-             cmap_rof, cmap_rof, cmap_diff, 
-             cmap_event, cmap_event, cmap_matrix]
-             
-    # get background map and set the 
-    #gdf_states = gpd.read_file(in_dir + "US_States_CONUS.shp")
-    #gdf_max_bound.crs = gdf_states.crs             
-
     # set up the figure
-    xlim = [-126, -66]
-    ylim = [24, 52]
-    figsize = (36, 20)
+    xlim = [-126, -60]
+    ylim = [24, 53]
+    figsize = (30.5, 16)
 
     fig, axes = plt.subplots(nrows=3, ncols=3, figsize=figsize, squeeze=0, sharex=True, sharey=True)
     plt.subplots_adjust(hspace=0.03, wspace=0.02, top=0.95)
@@ -2361,50 +2342,47 @@ def nine_panel_conus(df_stats_huc, gdf_region_hucs_eval, gdf_bounds, df_reach,
     # loop through the axes, adding maps/plots
     for i, ax in enumerate(axes.flat):
 
-        #basemap = gdf_states.plot(ax=ax, alpha=0.5, facecolor = 'lightgray', edgecolor='gray')
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)       
         
-        if i == 8:
-            # do not include true negatives
-            # if all are true negatives, do not plot
-            gdf_sub = gdf[gdf[col_labels[i]] < 4]
-            if len(gdf_sub) > 0:
-                gdf_sub.plot(ax=ax, column = col_labels[i], cmap = cmaps[i], vmin = vmins[i], vmax = vmaxs[i], zorder = 2)
-        elif i in [0, 1, 2]:
+        ############### HUC polygons ###################
+        if i in [0, 1, 2]:
             # if precip was missing, leave MAP plots blank
             if not gdf[col_labels[i]].isnull()[0]:
-                gdf.plot(ax=ax, column = col_labels[i], cmap = cmaps[i], vmin = vmins[i], vmax = vmaxs[i], zorder = 2)
+                gdf.plot(ax=ax, column = col_labels[i], cmap = cmaps[i], norm = norms[i], zorder = 3)
             else:    
-                ax.text('MAP data error', np.mean(xlim), np.mean(ylim), ha = 'center')
+                ax.text('MAP data error', np.mean(xlim), np.mean(ylim), ha = 'center', fontsize = 20)
             
         else:
-            gdf.plot(ax=ax, column = col_labels[i], cmap = cmaps[i], vmin = vmins[i], vmax = vmaxs[i], zorder = 2)
+            gdf.plot(ax=ax, column = col_labels[i], cmap = cmaps[i], norm = norms[i], zorder = 3)
         
-        # if first two rows, add colorbar
+        ############### colorbars ###################
+        # precip use defined bins above
+        
         if i < 6:
-            cbaxes = ax.inset_axes([0.89, 0.05, 0.03, 0.5])
-            cmap = mpl.cm.get_cmap(cmaps[i])
-            norm = mpl.colors.Normalize(vmin=vmins[i], vmax=vmaxs[i])
-            cb = fig.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap),
-                     cax=cbaxes, orientation='vertical')
+            cb_pos = [0.96, 0.03, 0.03, 0.94]
+            cbaxes = ax.inset_axes(cb_pos)
+            cmap = mpl.cm.get_cmap(cmaps_cb[i])
+            norm = norms[i]
             
+            cb = fig.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap),
+                    cax=cbaxes, orientation='vertical',ticklocation='left')
+                   
+            cb.set_ticks(bounds[i])      
+            if i < 2:
+                cb.set_ticks(bounds[i][:-1])   
+                
             if i < 3:
                 cb.set_label(label='inches',size = 15)
             else:
-                cb.set_label(label='%',size = 17)
-                
-            if i in [3, 4]:
-                cb.set_ticks(np.arange(0,110,10))
-                 
+                cb.set_label(label='%',size = 17)                            
         
         subtitle_x = xlim[0] + 0.5
         subtitle_y = ylim[1] - 2
-        ax.text(subtitle_x, subtitle_y, subtitle_text[i], fontsize = 26)
+        ax.text(subtitle_x, subtitle_y, subtitle_text[i], fontsize = 22)
         ax.tick_params(axis='both', which='major', labelsize=16)
 
         # annotate bottom row
-
 
         # Event yes/no maps
         if i in [6,7]:
@@ -2422,10 +2400,9 @@ def nine_panel_conus(df_stats_huc, gdf_region_hucs_eval, gdf_bounds, df_reach,
             text_y = [text_y0, text_y0 + dy]
 
             for j in range(2):
-                square = ax.scatter(patch_x, patch_y[j], color = colors_bin[j], marker='s',  edgecolor = 'black', s=300, zorder = 2)            
+                square = ax.scatter(patch_x, patch_y[j], color = cmaps[i](j), marker='s',  edgecolor = 'black', s=300, zorder = 2)            
                 ax.text(text_x, text_y[j], leg_label[j], fontsize = 18)
-                
-                       
+                                      
         # contingency matrix map
         if i == 8:
             leg_label_left = ['True Pos:  ','False Pos:  ', 'False Neg:  ', 'True Neg:  ']
@@ -2445,28 +2422,20 @@ def nine_panel_conus(df_stats_huc, gdf_region_hucs_eval, gdf_bounds, df_reach,
             vals_right = [f'{i:.3f}' for i in df_show_stats.iloc[:,5:9].values.tolist()[0]]       
        
             for j in range(3):#(4):
-                square = ax.scatter(patch_x, patch_y[j+1], color = colors_mat[j], edgecolor = 'black', marker='s', s=200, zorder = 2)            
+                square = ax.scatter(patch_x, patch_y[j+1], color = cmaps[i](j), edgecolor = 'black', marker='s', s=200, zorder = 2)            
                 ax.text(left_text_x, text_y[j+1], leg_label_left[j] + vals_left[j], fontsize = 18)
             
             ax.text(right_text_x, leg_title_y,'-- Stats Region', fontsize = 18, fontweight = 'bold', ha = 'right')
             for j in range(3):
                 ax.text(right_text_x, text_y[j+1], leg_label_right[j] + vals_right[j], fontsize = 18, ha = 'right')
                 
-            # add outer boundary as dashed line around selected (largest) object
-            boundline = plt.plot(x,y,'--', color='k', linewidth = 1.5)
-            
+        # add outer boundary around objects, with thicker black dashed line around selected (largest) object
+        gdf_max_bound.plot(ax=ax, facecolor = 'none', edgecolor='black', linewidth = 1.5, linestyle = '--', zorder = 2)
+        gdf_rest_bound.plot(ax=ax, facecolor = 'none', edgecolor='white', linewidth = 1.5, zorder = 2)
+    
         gdf_states.plot(ax=ax, alpha=0.5, facecolor = 'lightgray', edgecolor='gray', zorder = 1)
 
-    # set up text for overall figure heading
-#    vtime_start_str = (ref_time + timedelta(hours=1)).strftime("%b %d %Hz")
-#    vtime_end_str = (ref_time + timedelta(hours=18)).strftime("%b %d %Hz")
-#    fig.suptitle('Ref Time:  ' + ref_time.strftime("%Y %b %d %Hz") + \
-#                 ' (Valid Times: '+ vtime_start_str + ' - ' + vtime_end_str + ')' + \
-#                 '  AnA Source:  ' + verif_abbrev.loc[verif_config] + 
-#                 '  Str order lim: ', 
     fig.suptitle(fig_title, fontsize=20, y = 0.98)   
-
-#    fig_filename = out_dir + "ROF_9panel_" + domain + ref_time.strftime("_%Y%m%d_%Hz") + ".png"
     print('writing PNG file: ', fig_path)
     plt.savefig(fig_path, dpi=150, bbox_inches = "tight")
     
@@ -2475,7 +2444,6 @@ def nine_panel_conus(df_stats_huc, gdf_region_hucs_eval, gdf_bounds, df_reach,
 def region_shapefile(dict_map, df_huc_eval, gdf_huc10_dd,
                      eval_config, verif_config, col_heads):
     
-                    
     col_labels = ['sum_ts','sum_ts','sum_ts',
                    col_heads[0], col_heads[1], 'diff', 
                    col_heads[2], col_heads[3], 'matrix','obj']   
@@ -2505,7 +2473,7 @@ def region_shapefile(dict_map, df_huc_eval, gdf_huc10_dd,
         
     gdf_dd['matrix_x'] = gdf_dd['matrix'].replace([1, 2, 3, 4], ['TP', 'FP', 'FN', 'TN'])    
            
-    return gdf_dd #, gdf_prj
+    return gdf_dd
 
 
 def write_output(ref_time, out_dir, domain, gdf_dd, df_gages, gdf_bounds):
@@ -2552,7 +2520,6 @@ def empty_fig(fig_path, fig_title, gdf_states):
     # loop through the axes, adding maps/plots
     for i, ax in enumerate(axes.flat):
 
-        #basemap = gdf_states.plot(ax=ax, alpha=0.5, facecolor = 'lightgray', edgecolor='gray')
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)      
         
@@ -2569,3 +2536,112 @@ def create_dir_if_not_exist(p: Path):
     if not p.exists():
         print(f"Directory {p} does not exist. Creating {p}")
         p.mkdir(parents=True, exist_ok=True)
+
+def fig_colors(gdf):
+
+    # define color maps and colorbars
+
+    # Precip maps - WPC colormap
+    cm_map_list = [[0.,0.,0.,0.],
+                   'lime',
+                   'limegreen',
+                   [0, 0.55, 0.25, 1.], 
+                   [0, 0.35, 0.45, 1.],
+                   'dodgerblue',
+                   'deepskyblue',
+                   'cyan',
+                   'mediumpurple',
+                   'darkorchid',
+                   'darkmagenta',
+                   'firebrick',
+                   'red',
+                   'orangered',
+                   'darkorange',
+                   'darkgoldenrod',
+                   'gold',
+                   'yellow',
+                   'lightpink']
+    bounds_map = [0, 0.01, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5, 7, 10, 15, 20, 100]
+    
+    cm_map_cbar_list = cm_map_list.copy()
+    cm_map_cbar_list[0] = [0.1,0.1,0.1,0.05]
+    
+    cmap_map = ListedColormap(cm_map_list)       
+    cmap_map_cbar = ListedColormap(cm_map_cbar_list)
+
+    # ROF maps
+    cm_rof_list = [[0., 0., 0., 0.],
+                   [0.98046875, 0.86328125, 0.42578125, 1.],
+                   [0.984375  , 0.69921875, 0.265625, 1.],
+                   [0.9453125 , 0.5546875 , 0.359375, 1.],
+                   [0.85546875, 0.44921875, 0.453125, 1.],
+                   [0.73046875, 0.37890625, 0.59765625, 1.],
+                   [0.6015625 , 0.328125  , 0.5703125, 1.],
+                   [0.46484375, 0.28125   , 0.5546875, 1.],
+                   [0.328125  , 0.28515625, 0.44140625, 1.],
+                   [0.24609375, 0.24609375, 0.24609375, 1.]]
+                    
+    bounds_rof = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+    
+    cm_rof_cbar_list = cm_rof_list.copy()
+    cm_rof_cbar_list[0] = [0.1,0.1,0.1,0.05]
+    
+    cmap_rof = ListedColormap(cm_rof_list)       
+    cmap_rof_cbar = ListedColormap(cm_rof_cbar_list)
+
+    # Difference maps
+    
+    getmap = cm.get_cmap('jet_r', 25)
+    getarr = getmap(np.linspace(0, 1, 25))
+    trans = [0.1, 0.1, 0.1, 0.]
+    gray = [0.1, 0.1, 0.1, 0.05]
+    
+    cmap_map_diff = ListedColormap(np.vstack((getarr[0:9,:], [1., 1., 0., 1.], trans, getarr[15:,:])), name='Diff_map')
+    cmap_map_diff_cbar = ListedColormap(np.vstack((getarr[0:9,:], [1., 1., 0., 1.], gray, getarr[15:,:])), name='Diff_map')
+    bounds_diff_map = [-5, -4.5, -4, -3.5, -3, -2.5, -2, -1.5, -1, -0.5,
+                      -0.1, 0.1, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5]
+    
+    cmap_rof_diff = ListedColormap(np.vstack((getarr[0:9,:], trans, trans, trans, getarr[16:,:])), name='Diff_map')
+    cmap_rof_diff_cbar = ListedColormap(np.vstack((getarr[0:9,:], gray, gray, gray, getarr[16:,:])), name='Diff_map')
+    bounds_diff_rof = [-100,-90,-80,-70,-60,-50,-40,-30,-20,-10,-1,
+                        1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+    
+    #contingency matrix
+    colors_mat = ['lime','yellow','red',[0., 0., 0., 0.0]]
+    cmap_matrix = ListedColormap(colors_mat)
+
+    colors_event = ['white','black']
+    cmap_event = ListedColormap(colors_event)
+    
+    cmaps = [cmap_map, cmap_map, cmap_map_diff, 
+             cmap_rof, cmap_rof, cmap_rof_diff, 
+             cmap_event, cmap_event, cmap_matrix]  
+    
+    cmaps_cb = [cmap_map_cbar, cmap_map_cbar, cmap_map_diff_cbar, 
+                cmap_rof_cbar, cmap_rof_cbar, cmap_rof_diff_cbar]  
+                
+    bounds = [bounds_map, bounds_map, bounds_diff_map, 
+              bounds_rof, bounds_rof, bounds_diff_rof]
+                         
+    # define limits for colormaps/colorbars
+    # set precip max (plim) for colormap to either 100 or the max value in the data
+    # rof percent limit (rlim) is 100   
+    plim = 5
+    rlim = 100
+    vmins = [0, 0, -plim, 
+             0, 0, -rlim, 
+             0, 0, 1]
+    vmaxs = [plim, plim, plim,
+             rlim, rlim, rlim, 
+             1, 1, 4]
+             
+    norms = []         
+    for i in range(9):
+        if i < 6:
+            norm = mpl.colors.BoundaryNorm(bounds[i], cmaps[i].N)
+        else:
+            norm = mpl.colors.Normalize(vmin=vmins[i], vmax=vmaxs[i])
+            
+        norms.append(norm)
+                
+    return cmaps, cmaps_cb, norms, bounds

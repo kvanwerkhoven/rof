@@ -74,6 +74,8 @@ def rof_eval_with_download(domain, nwm_repo, in_dir, out_dir,
     ind = 0
     for i, ref_time in enumerate(ref_time_list):
 
+        print ("-------------Ref_time:", ref_time,"-------------")
+
         version = version_list[i]
 
         if version == 2.1:
@@ -961,18 +963,15 @@ def check_files_exist(df_filelists_reftime):
     #    or were successfully downloaded
     # if any channel_rt output is missing - set flag to False which will skip the reftime
     # if grids are missing, allow ROF calculations to continue 
-    
-    all_files_exist = True
-    
-    for index, row in df_filelists_reftime.iterrows():
 
-        filelist = row['filelist']
-        in_cache = row['in_cache']
-    
-        for i, file in enumerate(filelist):
-            
-            if not in_cache[i]:
-                all_files_exist = False
+    all_files_exist = False
+
+    in_cache = []
+    for index, row in df_filelists_reftime.iterrows():
+        in_cache.extend(row['in_cache'])
+        
+    if all(in_cache):
+        all_files_exist = True
     
     return all_files_exist
     
@@ -2292,12 +2291,7 @@ def nine_panel_conus(df_stats_huc, gdf_region_hucs_eval, gdf_bounds, df_reach,
     max_obj = df_stats_huc['tot'].max()
     df_show_stats = df_stats_huc[df_stats_huc['tot'] == max_obj]
     gdf_max_bound = gdf_bounds.loc[df_show_stats.index]
-    gdf_rest_bound = gdf_bounds[~gdf_bounds.index.isin(df_show_stats.index)]
-
-    # TEMPORARY - column headers to read reach DF to get # ROF reaches and total stream length 'in ROF'
-    reach_col = ['','','','srf_rof','exana_rof']
-    if verif_config != 'analysis_assim_extend':
-        reach_col[4] = 'stana_rof'    
+    gdf_rest_bound = gdf_bounds[~gdf_bounds.index.isin(df_show_stats.index)]  
     
     ######################### Set-up labels and text ##############################
     
@@ -2337,6 +2331,7 @@ def nine_panel_conus(df_stats_huc, gdf_region_hucs_eval, gdf_bounds, df_reach,
     for col in col_labels[0:3]:
         gdf[col] = gdf[col] / 25.4
         
+    # get colormaps for each panel
     cmaps, cmaps_cb, norms, bounds = fig_colors(gdf) 
          
     ################################### set up the figure ###############################
